@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  # Issue #809: scheduled run of the #[ignore]d self_analysis_full_pipeline test.
+  # The `check` job (blocking, every push/PR) runs the de-ignored
+  # integration_test.rs::test_full_analyze_and_query_cycle. The
+  # scheduled-full-pipeline job (this trigger + workflow_dispatch) runs the
+  # #[ignore]d self_analysis_full_pipeline test weekly.
+  schedule:
+    - cron: "30 4 * * 1-5"
+
+# CI only reads the repository; nothing here needs write access.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry, index, and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache embedding model (potion-code-16M-v2)
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-potion-code-16M-v2-model
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Integration test (pinned fixture repo, #809)
+        run: |
+          TMP_FIXTURE=$(mktemp -d)
+          cp -r tests/fixtures/sample_repo/* "$TMP_FIXTURE/"
+          git -C "$TMP_FIXTURE" init -q
+          git -C "$TMP_FIXTURE" add -A
+          git -C "$TMP_FIXTURE" -c user.email=ci@lievo.dev -c user.name=CI commit -q -m fixture
+          LIEVO_TEST_REPO="$TMP_FIXTURE" cargo test --test integration_test
+          rm -rf "$TMP_FIXTURE"
+
+      - name: Tests (lib unit tests)
+        run: cargo test --lib
+
+      - name: Check for orphaned source files
+        run: cargo run --example check_dead_files
+
+      - name: Check 500-line limit on non-test source files
+        run: cargo run --example check_file_size
+
+      - name: Audit dependencies (cargo-audit, #805)
+        run: |
+          cargo install cargo-audit
+          cargo audit
+
+      - name: Coverage gate
+        run: cargo run --bin lievo -- admin coverage --repo tests/fixtures/sample_repo --gate
+
+      - name: Selfcheck gate (pinned fixture, #701/#706 bug classes)
+        run: cargo run --bin lievo -- admin selfcheck --repo tests/fixtures/sample_repo --gate
+
+      # Real-corpus gate steps (issue #733). The selfcheck gate is BLOCKING
+      # (flipped in #763: it passes on a clean build at the ratcheted
+      # thresholds, so it no longer needs observe mode). The coverage gate
+      # stays in observe mode (continue-on-error): with the trait-method
+      # fan-out false positive ('input_schema') fixed, the gate now fails on
+      # max_fan_out 13 for 'new' — a genuine second offender — so flipping it
+      # to blocking would turn CI red. FAN_OUT_THRESHOLD is unchanged at 10.
+      # Selfcheck thresholds are ratcheted per the issue #742 rule:
+      # wrong-edge-rate to the measured value rounded UP to the next 0.01.
+      # Since #777 the metric scores only import-resolved edges (call-based
+      # edges are reported separately as unverifiable-by-construction); the
+      # measured rate is 0.0018, so 0.15 → 0.01. The false-zero-callers
+      # threshold is the exact measured count (0, after the #747
+      # classification fix — was 2).
+
+      - name: Coverage gate (real corpus, lievo's own tree, #733)
+        continue-on-error: true
+        run: cargo run --bin lievo -- admin coverage --repo . --gate
+
+      - name: Selfcheck gate (real corpus, lievo's own tree, #733/#742/#763)
+        run: cargo run --bin lievo -- admin selfcheck --repo . --gate --max-wrong-edge-rate 0.01 --max-false-zero-callers 0 --max-super-probe-failures 8
+
+      - name: Build selfcheck project index (real corpus, #733)
+        env:
+          LIEVO_DB: ci-selfcheck-gate.db
+        run: |
+          cargo run --bin lievo -- admin create-project ci-gate-ci
+          cargo run --bin lievo -- admin add-repo . ci-gate-ci
+          cargo run --bin lievo -- refresh ci-gate-ci --no-summarize
+
+      - name: Selfcheck gate with probes + payload (real corpus, #733)
+        env:
+          LIEVO_DB: ci-selfcheck-gate.db
+        run: cargo run --bin lievo -- admin selfcheck --repo . --project ci-gate-ci --probes tests/fixtures/selfcheck_probes.tsv --gate --min-worst-probe 0.5 --max-wrong-edge-rate 0.01 --max-false-zero-callers 0 --max-super-probe-failures 8
+
+  # Issue #809: scheduled run of the #[ignore]d self_analysis_full_pipeline test.
+  # Runs on a weekly schedule (Mon-Fri 04:30) so it does NOT slow down every
+  # PR. Uses the same ONNX model cache as the main check job, so the model
+  # download is amortized across scheduled runs.
+  #
+  # Decision (#809):
+  #   - test_full_analyze_and_query_cycle: runs in the `check` job above
+  #     (blocking, every push/PR). In-memory, network-free, cheap.
+  #   - self_analysis_full_pipeline: stays #[ignore]d (documented exception in
+  #     tests/self_analysis_test.rs) and runs here on a schedule. Downloads the
+  #     ONNX embedding model and analyzes the full lievo tree.
+  scheduled-full-pipeline:
+    name: Scheduled full-pipeline (self-analysis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry, index, and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache embedding model (potion-code-16M-v2)
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-potion-code-16M-v2-model
+
+      - name: Build
+        run: cargo build --tests --quiet
+
+      - name: Run #[ignore]d self-analysis test
+        run: cargo test --test self_analysis_test -- --ignored --nocapture

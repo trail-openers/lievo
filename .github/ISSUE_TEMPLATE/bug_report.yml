@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a bug or unexpected behavior
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A brief description of the bug
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the bug behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened (include error messages if applicable)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Your operating system (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
+    validations:
+      required: true
+  - type: input
+    id: rust_version
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`
+    validations:
+      required: true
+  - type: input
+    id: lievo_version
+    attributes:
+      label: lievo version
+      description: Output of `lievo --version` (or commit if built from source)
+    validations:
+      required: true
+  - type: input
+    id: agent_client
+    attributes:
+      label: Agent / client and version
+      description: The agent or MCP client you were using (e.g., Claude Code 1.x, Cursor 0.x) and its version
+    validations:
+      required: true
+  - type: textarea
+    id: doctor_output
+    attributes:
+      label: `lievo doctor` output
+      description: Run `lievo doctor` in the affected directory and paste the full output here (human or JSON). This tells us the repo resolution, index state, and environment at a glance. The output contains local paths (data directory, database, repository) — feel free to redact them if you do not want to share them.
+    validations:
+      required: false

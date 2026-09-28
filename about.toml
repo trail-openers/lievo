@@ -1,0 +1,33 @@
+# Licences we accept in this project's dependency tree.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC-BY-4.0",
+    "CC0-1.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "MIT",
+    "Unlicense",
+    "Zlib",
+]
+
+# model2vec ships an MIT licence file but its crates.io metadata has license =
+# null; its LICENSE file (in the cargo registry) is the source of truth.
+[model2vec]
+[model2vec.clarify]
+license = "MIT"
+
+[[model2vec.clarify.files]]
+path = "LICENSE"
+checksum = "6869ad291a9df9866448579b7157bf337373a21ced5b4b315e68b2924aff2ab9"

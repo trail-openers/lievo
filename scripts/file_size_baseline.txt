@@ -1,0 +1,23 @@
+# File-size baselines (issue #702, PM policy revision 2026-09-11).
+#
+# Each line: `<path>=<wc -l at the branch point>`. A listed file may grow at
+# most 10% above its baseline before the check_file_size CI gate fails; a
+# file that shrinks to its category budget or below no longer breaches —
+# remove its line then (follow-up chore).
+#
+# Budgets enforced by scripts/check_file_size.rs: source 500, test 800,
+# config 200 (physical wc -l lines).
+#
+# Grandfathered at branch point 81c1ce5 (main) plus this PR's refactored
+# extractor (1,338 → 450 lines below).
+
+.github/workflows/release.yml=223
+Cargo.lock=3249
+scripts/check_dead_files.rs=753
+src/analysis/import_resolver.rs=717
+src/refresh/mod.rs=589
+src/retrieval/retrieval_eval.rs=507
+src/summarization/apfel.rs=658
+src/summarization/apfel_server_tests.rs=990
+src/summarization/pipeline_tests.rs=1176
+scripts/check_file_size.rs=573

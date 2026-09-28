@@ -1,0 +1,35 @@
+# Rust
+/target
+
+# IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Lievo workspace tree
+.worktrees/
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+
+# Lievo data
+lievo/index/
+
+# Test artifacts
+/tests/fixtures/*
+!/tests/fixtures/sample_repo
+!/tests/fixtures/selfcheck_probes.tsv
+/tests/fixtures/cassettes
+.pi/

@@ -1,0 +1,11 @@
+# Core library and binary
+src/lib.rs @randomm
+src/bin/ @randomm
+
+# Critical subsystems
+src/storage/ @randomm
+src/mcp/ @randomm
+
+# Build and CI
+Cargo.toml @randomm
+.github/workflows/ @randomm

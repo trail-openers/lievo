@@ -1,0 +1,80 @@
+[package]
+name = "lievo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "AGPL-3.0-only"
+repository = "https://github.com/trail-openers/lievo"
+homepage = "https://github.com/trail-openers/lievo"
+keywords = ["codebase", "knowledge", "analysis", "code-intelligence", "mcp"]
+categories = ["command-line-utilities", "database", "development-tools"]
+readme = "README.md"
+authors = ["Janni Turunen", "Trail Openers Oy"]
+description = "Code analysis and knowledge platform — analyze codebases, query entity graphs, serve structured knowledge via MCP"
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+git2 = "0.21"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "7"
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+toml = "1.1"
+chrono = "0.4"
+rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }
+schemars = "1.2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+indicatif = "0.17"
+sha2 = "0.11"
+regex = "1"
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-go = "0.25"
+ignore = "0.4"
+# Blocking HTTP client for the apfel server path (issue #772). Already in the
+# lockfile via hf-hub (transitively); promoted to a direct dependency. ureq is
+# synchronous, which keeps the summarization pipeline free of the tokio runtime
+# (tokio/rmcp are MCP-only), consistent with `run_apfel`'s thread+channel model.
+ureq = "3.3"
+model2vec = "0.3"
+usearch = "2"
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
+
+[features]
+test-with-apfel = []
+
+[lib]
+name = "lievo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lievo"
+path = "src/bin/lievo/main.rs"
+
+[[example]]
+name = "check_dead_files"
+path = "scripts/check_dead_files.rs"
+
+[[example]]
+name = "check_file_size"
+path = "scripts/check_file_size.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

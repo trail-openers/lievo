@@ -1,0 +1,108 @@
+// Issue #856: v9→v10 migration test — split from schema_tests_migrations.rs
+// to stay within the 500-line source budget.
+
+use super::*;
+use tempfile::NamedTempFile;
+
+/// v9-schema repositories table (no unresolved_* columns — v9→v10 adds them).
+fn create_v9_repositories_table(conn: &Connection) {
+    conn.execute(
+        "CREATE TABLE repositories (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, local_path TEXT NOT NULL UNIQUE)",
+        [],
+    )
+    .unwrap();
+}
+
+fn unresolved_columns(conn: &Connection) -> (Option<i64>, Option<i64>) {
+    conn.query_row(
+        "SELECT unresolved_internal, unresolved_external FROM repositories WHERE id = 'r1'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_migrate_v9_to_v10_adds_null_unresolved_columns() {
+    // #856: v9→v10 adds nullable `unresolved_internal`/`unresolved_external`
+    // INTEGER columns to repositories. Pre-migration rows must read back as
+    // NULL ("not recorded" — pre-fix indexes degrade to null, never a
+    // fabricated zero).
+    // NOTE: `tf` is held in scope so the NamedTempFile's file isn't
+    // unlinked out from under the Connection (macOS unlink-during-open
+    // can trigger SQLITE_IOERR).
+    let tf = NamedTempFile::new().unwrap();
+    let conn = Connection::open(tf.path()).unwrap();
+    conn.pragma_update(None, "user_version", 9).unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    create_v9_repositories_table(&conn);
+    conn.execute(
+        "INSERT INTO repositories (id, project_id, name, local_path) VALUES ('r1', 'p1', 'Test Repo', '/tmp/test')",
+        [],
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
+
+    // Both columns exist on repositories.
+    let cols: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM pragma_table_info('repositories') WHERE name IN ('unresolved_internal', 'unresolved_external')",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(
+        cols.len(),
+        2,
+        "both unresolved columns must exist: {cols:?}"
+    );
+
+    // Pre-migration rows read back NULL (not recorded) — the null-versus-zero
+    // distinction the #856 design relies on.
+    assert_eq!(unresolved_columns(&conn), (None, None));
+
+    // A post-migration write of recorded values (zeros included) round-trips.
+    conn.execute(
+        "UPDATE repositories SET unresolved_internal = 0, unresolved_external = 5 WHERE id = 'r1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(unresolved_columns(&conn), (Some(0), Some(5)));
+
+    // Idempotency: a second migrate() pass over the v10 DB is a no-op.
+    migrate(&conn).unwrap();
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
+}
+
+#[test]
+fn test_fresh_db_repositories_columns_match_upgraded_db() {
+    // #856: a brand-new database (fresh path, SCHEMA_V1 DDL + version stamp)
+    // must carry the same `unresolved_internal`/`unresolved_external`
+    // columns as a v9→v10 upgraded one — otherwise fresh indexes would fail
+    // reads with "no such column".
+    let fresh = Connection::open_in_memory().unwrap();
+    migrate(&fresh).unwrap();
+    let fresh_cols: Vec<String> = {
+        let mut stmt = fresh
+            .prepare(
+                "SELECT name FROM pragma_table_info('repositories') WHERE name IN ('unresolved_internal', 'unresolved_external')",
+            )
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(
+        fresh_cols.len(),
+        2,
+        "fresh DB must have both unresolved columns: {fresh_cols:?}"
+    );
+}

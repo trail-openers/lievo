@@ -1,0 +1,18 @@
+# Selfcheck retrieval probes for lievo's own tree (issue #733).
+#
+# Format: query<TAB>expected_repo_relative_path — one pair per line, `#`
+# comment lines and blank lines are skipped (parse_probes, selfcheck_metrics.rs).
+#
+# Query selection rule: each query must match the target file's file entity
+# (name or path) in the `explore` tool's word-match — a single underscore-
+#joined token from the filename, or a multi-word query where EVERY word
+# appears in the name/path (AND semantics over the word list).
+#
+# Maintenance: if a probe target file is renamed or moved, update the
+# expected_path (and the query if its wording came from the filename) in
+# the same PR. Targets are chosen from long-lived core modules to minimise
+# churn.
+
+selfcheck_false_zero	src/bin/lievo/commands/project/selfcheck_false_zero.rs
+coverage	src/analysis/coverage.rs
+metrics	src/bin/lievo/commands/project/selfcheck_metrics.rs
