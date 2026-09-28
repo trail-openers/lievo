@@ -99,7 +99,9 @@ When splitting work from `docs/spec.md` into issues:
 
 ## Releasing
 
-lievo is released as prebuilt binaries via cargo-dist. The release is triggered by a semver tag (e.g. `v0.1.0`) pushed by the operator.
+lievo is released as prebuilt binaries via cargo-dist. A release is triggered by a semver tag (e.g. `v0.1.0`) pushed by the operator; cargo-dist only publishes a tag whose version matches the package version in `Cargo.toml`, so the version must be bumped first.
+
+A release candidate: PR bumping `Cargo.toml` (and `Cargo.lock`) to `X.Y.Z-rc.N` → merge → tag `vX.Y.Z-rc.N` (cargo-dist builds a GitHub pre-release). The final release: PR bumping to `X.Y.Z` and setting the date on the `## [X.Y.Z]` heading in `CHANGELOG.md` → merge → tag `vX.Y.Z`. Note that `releases/latest/download/` installer URLs in the docs only start working once the first non-prerelease is out.
 
 ### Regenerating third-party notices
 
@@ -114,7 +116,7 @@ cargo about generate THIRD_PARTY_NOTICES.md.hbs -o THIRD_PARTY_NOTICES.md
 
 ### Dry run (pre-release)
 
-1. Push a pre-release tag: `git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1`
+1. Push the pre-release tag (after the version bump above merged): `git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1`
 2. Watch the GitHub Actions run — the `plan` job validates the config, then all build jobs run in parallel.
 3. Verify the GitHub pre-release contains: archives for all 5 targets, `sha256.sum`, `lievo-installer.sh`, `lievo-installer.ps1`.
 4. Smoke test the published shell installer on a clean macOS and a clean Linux machine (see below).
@@ -144,9 +146,10 @@ Both should print `lievo 0.1.0` and a JSON-RPC response with `serverInfo`.
 ### Cutting the real release
 
 1. Confirm the dry run succeeded and the smoke test passed.
-2. **Set the changelog date**: in `CHANGELOG.md`, replace the `- Unreleased` placeholder on the `## [0.1.0]` heading with today's date in `YYYY-MM-DD` form, leaving the rest of the entry untouched. Commit this in a normal PR and merge it — do **not** do this in the release commit itself.
-3. From the merge commit on `main`, push the final tag: `git tag v0.1.0 && git push origin v0.1.0`. The tag must point at the merge commit that carries the dated changelog, so the GitHub Release body renders the correct version section.
-4. The release workflow creates a GitHub release with all artifacts.
+2. **Bump to the final version**: PR bumping `Cargo.toml` (and `Cargo.lock`) from `0.1.0-rc.1` to `0.1.0` → merge.
+3. **Set the changelog date**: in `CHANGELOG.md`, replace the `- Unreleased` placeholder on the `## [0.1.0]` heading with today's date in `YYYY-MM-DD` form, leaving the rest of the entry untouched. Commit this in a normal PR and merge it — do **not** do this in the release commit itself.
+4. From the merge commit on `main`, push the final tag: `git tag v0.1.0 && git push origin v0.1.0`. The tag must point at the merge commit that carries the dated changelog, so the GitHub Release body renders the correct version section.
+5. The release workflow creates a GitHub release with all artifacts.
 
 ### Runner allocation per target
 
