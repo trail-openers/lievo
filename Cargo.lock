@@ -1301,7 +1301,7 @@ dependencies = [
  "git2",
  "hf-hub",
  "ignore",
- "indicatif 0.17.11",
+ "indicatif 0.18.4",
  "model2vec",
  "regex",
  "rmcp",
