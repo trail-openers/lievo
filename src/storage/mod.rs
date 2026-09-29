@@ -88,14 +88,11 @@ pub trait Storage {
     /// fetch only symbol-tier entities (the non-file tiers — see
     /// `crate::retrieval::tools_explore_symbols::SYMBOL_TIERS`) whose
     /// lowercase name contains ANY plain lowercase query word (OR
-    /// semantics).
-    ///
-    /// `words` must be plain lowercase words — no `%` wildcards; the
-    /// implementation owns LIKE pattern formatting. `SqliteStorage`
+    /// semantics). `words` must be plain lowercase words — no `%` wildcards;
+    /// the implementation owns LIKE pattern formatting. `SqliteStorage`
     /// overrides with the indexed `LIKE` query (narrow repo_id/path/name
-    /// projection — no summary/metrics blobs per row); the default filters
-    /// `list_entities` in Rust so test mocks that don't model the SQL
-    /// projection still compile.
+    /// projection); the default filters `list_entities` in Rust so test
+    /// mocks that don't model the SQL projection still compile.
     fn symbols_matching_names(
         &self,
         project_id: &str,

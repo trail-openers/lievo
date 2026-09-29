@@ -476,8 +476,7 @@ LIMIT ?{}
 pub fn build_symbol_name_prefilter_query(word_count: usize) -> Option<String> {
     if word_count == 0 {
         return None;
-    }
-    let word_clauses: Vec<String> = (0..word_count)
+    }    let word_clauses: Vec<String> = (0..word_count)
         .map(|i| format!("LOWER(name) LIKE '%' || ?{} || '%'", i + 2))
         .collect();
     let exact_clauses: Vec<String> = (0..word_count)

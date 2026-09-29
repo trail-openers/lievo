@@ -249,8 +249,6 @@ impl Storage for SqliteStorage {
         sqlite_delete::delete_repo(&self.conn, repo_id)
     }
 
-    // ---- Entity (delegated to sqlite_ops) ----
-
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         sqlite_ops::upsert_entity(&self.conn, entity, &Self::now())
     }
@@ -280,9 +278,6 @@ impl Storage for SqliteStorage {
         else {
             return Ok(Vec::new());
         };
-        // Single construction site for the SQL patterns: project_id, one
-        // `%word%` per query word, then the limit — matching the `?N` shape
-        // the generated query documents.
         let limit = crate::retrieval::tools_explore_symbols::SYMBOL_PREFILTER_LIMIT as i64;
         let mut owned: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_id.to_string())];
         for w in words {
@@ -300,6 +295,7 @@ impl Storage for SqliteStorage {
         })?;
         sqlite_ops::collect_rows(rows)
     }
+
 
     fn search_entities_by_name(
         &self,
