@@ -1,0 +1,10 @@
+# numkong 7.6.0 (via usearch) build probes over-report two kernels on
+# GCC 11 (GitHub ubuntu-22.04 runners):
+#   - x86_64 NK_TARGET_SAPPHIREAMX (kernel requires avx512fp16)
+#   - aarch64 NK_TARGET_NEONSDOT (vdotq_s32 target option mismatch)
+# lievo's f32 cosine search path does not use these int8/AMX kernels,
+# so disabling them costs nothing.
+- name: Work around numkong 7.6.0 GCC 11 probe over-reporting
+  run: |
+    echo "NK_TARGET_NEONSDOT=0" >> "$GITHUB_ENV"
+    echo "NK_TARGET_SAPPHIREAMX=0" >> "$GITHUB_ENV"

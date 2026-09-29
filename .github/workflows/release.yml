@@ -127,6 +127,10 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Work around numkong 7.6.0 GCC 11 probe over-reporting"
+        run: |
+          echo "NK_TARGET_NEONSDOT=0" >> "$GITHUB_ENV"
+          echo "NK_TARGET_SAPPHIREAMX=0" >> "$GITHUB_ENV"
       - uses: swatinem/rust-cache@v2
         with:
           key: ${{ join(matrix.targets, '-') }}
