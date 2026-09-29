@@ -268,6 +268,27 @@ impl Storage for SqliteStorage {
         sqlite_ops::list_entities(&self.conn, project_id, tier)
     }
 
+    fn symbols_matching_names(
+        &self,
+        params: &[String],
+    ) -> Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
+        let word_count = params.len().saturating_sub(1);
+        let Some(sql) = crate::storage::queries::build_symbol_name_prefilter_query(word_count)
+        else {
+            return Ok(Vec::new());
+        };
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(crate::retrieval::tools_explore_symbols::SymbolCandidate {
+                path: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })?;
+        sqlite_ops::collect_rows(rows)
+    }
+
     fn search_entities_by_name(
         &self,
         project_id: &str,

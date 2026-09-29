@@ -632,7 +632,7 @@ fn zero_match_returns_guidance_with_empty_symbols() {
     assert_eq!(parsed["symbols"].as_array().unwrap().len(), 0);
     let warning = parsed["warning"].as_str().unwrap();
     assert!(
-        warning.contains("No matching file entities"),
+        warning.contains("No matching files or symbols"),
         "got: {warning}"
     );
 }

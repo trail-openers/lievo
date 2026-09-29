@@ -457,3 +457,36 @@ LIMIT ?{}
 
     sql
 }
+
+/// Build a parameterized query that fetches ONLY symbol-tier entities
+/// (Function/Module/Subsystem — i.e. `tier <> 'file'`) whose name
+/// lowercase-contains ANY search word (OR semantics). Storage-side
+/// prefilter: the retrieval layer re-confirms each candidate with the token
+/// matcher (`query_tokenizer::word_matches`) before it counts as a hit.
+///
+/// Used by `lievo_explore` query mode to resolve symbol names to their
+/// containing files without loading the whole entity table per call: the
+/// scan runs in SQL over a narrow projection (id, path, name — no summary
+/// or metrics blobs), so a large repo's index does not enter the process.
+///
+/// Params: `?1` = project_id, `?2..?N+1` = one lowercase word per OR clause.
+/// Returns `None` for an empty word list (no valid SQL to build; the caller
+/// treats that as "no candidates", never a SQL error).
+pub fn build_symbol_name_prefilter_query(word_count: usize) -> Option<String> {
+    if word_count == 0 {
+        return None;
+    }
+    let word_clauses: Vec<String> = (0..word_count)
+        .map(|i| format!("LOWER(name) LIKE '%' || ?{} || '%'", i + 2))
+        .collect();
+    Some(format!(
+        r#"
+SELECT path, name
+FROM entities
+WHERE project_id = ?1
+  AND tier <> 'file'
+  AND ({})
+"#,
+        word_clauses.join("\n    OR ")
+    ))
+}

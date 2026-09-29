@@ -84,6 +84,51 @@ pub trait Storage {
         project_id: &str,
         tier: Option<EntityTier>,
     ) -> crate::Result<Vec<Entity>>;
+    /// Storage-side prefilter for `lievo_explore` symbol-name matching:
+    /// fetch only symbol-tier entities (non-file) whose name contains one of
+    /// the preformatted `%word%` LIKE terms. Params match
+    /// `queries::build_symbol_name_prefilter_query(words.len())` —
+    /// `?1` = project_id, then one term per query word (OR semantics).
+    ///
+    /// The default scans `list_entities` in Rust so test mocks that don't
+    /// model the SQL projection still compile; `SqliteStorage` overrides it
+    /// with the indexed `LIKE` query (the narrow id/path/name projection —
+    /// no summary/metrics blobs per row).
+    fn symbols_matching_names(
+        &self,
+        params: &[String],
+    ) -> crate::Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
+        let project_id = params.first().cloned().unwrap_or_default();
+        let words: Vec<String> = params
+            .iter()
+            .skip(1)
+            .map(|w| w.trim_matches('%').to_string())
+            .collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let symbol_tiers = [
+            EntityTier::Function,
+            EntityTier::Module,
+            EntityTier::Subsystem,
+        ];
+        let mut out: Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate> = Vec::new();
+        for tier in symbol_tiers {
+            for e in self.list_entities(&project_id, Some(tier))? {
+                let name_lc = e.name.to_lowercase();
+                if words
+                    .iter()
+                    .any(|w| !w.is_empty() && name_lc.contains(w.as_str()))
+                {
+                    out.push(crate::retrieval::tools_explore_symbols::SymbolCandidate {
+                        path: e.path,
+                        name: e.name,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
     /// Search entities by name/path substring.
     /// Matches entities where ANY search word appears in name or path (OR semantics).
     /// `words` must be non-empty — passing an empty slice returns an InvalidInput error.

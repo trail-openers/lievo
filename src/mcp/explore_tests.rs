@@ -283,7 +283,7 @@ async fn lievo_explore_zero_match_returns_success_shaped_guidance() {
         parsed["warning"]
             .as_str()
             .unwrap()
-            .contains("No matching file entities")
+            .contains("No matching files or symbols")
     );
 }
 

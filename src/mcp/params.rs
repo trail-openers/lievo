@@ -89,8 +89,10 @@ fn default_tier() -> String {
 // model reads them every turn, so keep this a plain `//` comment.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(super) struct ExploreParams {
-    /// Keyword or name fragment to word-match against indexed file entities
-    /// by name or path (e.g. 'auth'). Not used when `files` is passed.
+    /// Keyword or name fragment to word-match against indexed file names/paths
+    /// and symbol names (functions, types). Exact symbol-name matches rank
+    /// above file-name/path matches (e.g. 'auth', 'sum_of_squares'). Not used
+    /// when `files` is passed.
     #[serde(default)]
     pub(super) query: String,
     /// Repo-relative file paths to fetch in ONE batched call (pack all needed

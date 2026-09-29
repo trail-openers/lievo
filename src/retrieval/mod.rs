@@ -24,6 +24,7 @@ pub(crate) mod tools_explore_in_progress;
 #[path = "tools_explore_match_tests.rs"]
 mod tools_explore_match_tests;
 pub(crate) mod tools_explore_scope;
+pub(crate) mod tools_explore_symbols;
 pub mod usearch_searcher;
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - Prebuilt installers for macOS and Linux (shell script) and Windows (PowerShell) from GitHub Releases — no Rust toolchain required; `cargo install` from git remains as a fallback.
-- `lievo mcp` — MCP server over stdio for agent integration. `lievo_explore` is the only tool exposed by default; the full tool set is available by opting in with the `LIEVO_MCP_TOOLS` environment variable.
+- `lievo mcp` — MCP server over stdio for agent integration. `lievo_explore` is the only tool exposed by default; the full tool set is available by opting in with the `LIEVO_MCP_TOOLS` environment variable. `lievo_explore` query mode now matches both file names/paths and symbol names (functions, types) — an exact symbol-name match ranks above a file-name or path match.
 - Zero-config repository resolution: `lievo mcp` with no arguments finds the git repository it is launched in and registers it automatically, so one user-level registration works in every repo.
 - Automatic background indexing: a never-indexed or stale repository is indexed/refreshed in the background when the MCP server starts (core index only — no model downloads). Set `LIEVO_NO_REFRESH=1` to disable.
 - `lievo doctor` — one-screen diagnostic that reports registration, index state, environment, and the single action that fixes each problem.
