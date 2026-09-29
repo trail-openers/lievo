@@ -16,13 +16,14 @@
 
 use serde_json::{Value, json};
 
-use crate::model::{Entity, EntityTier};
-use crate::retrieval::explore_common::{continuation_pointer, lock_storage, should_exclude_entity};
+use crate::model::Entity;
+use crate::retrieval::explore_common::{continuation_pointer, lock_storage};
 use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::{ExploreTool, ToolContext};
 use crate::retrieval::tools_explore_bundle::maybe_bundle_listing;
 use crate::retrieval::tools_explore_files::maybe_files_batch;
 use crate::retrieval::tools_explore_in_progress::indexing_in_progress_response;
+use crate::retrieval::tools_explore_symbols::matching_entities;
 use crate::storage::Storage;
 
 /// Hard output cap (chars) for the tool's serialized response (issue #680).
@@ -35,7 +36,7 @@ pub const DEFAULT_MAX_FILES: usize = 8;
 pub const MAX_MAX_FILES: usize = 30;
 
 use crate::retrieval::explore_cap::cap_response;
-use crate::retrieval::explore_ranking::rank_and_cut;
+use crate::retrieval::explore_ranking::rank_and_cut_with_symbols;
 pub use crate::retrieval::tools_explore_format::{
     SMALL_BODY_THRESHOLD_CHARS, is_small_body, line_numbered_source,
 };
@@ -50,7 +51,7 @@ use crate::retrieval::tools_explore_scope;
 /// length >= 2. Common English stop-words carried by natural-language queries
 /// (issue #837) are dropped here: an all-stop-word query therefore returns an
 /// empty word set, and the existing empty-words early return in
-/// `matching_file_entities` degrades gracefully instead of matching everything.
+/// `matching_entities` degrades gracefully instead of matching everything.
 pub(crate) fn query_words(query: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     query
@@ -61,39 +62,6 @@ pub(crate) fn query_words(query: &str) -> Vec<String> {
         .filter(|w| seen.insert(w.to_string()))
         .take(10)
         .map(String::from)
-        .collect()
-}
-
-/// Match file-tier entities against the query words. Admission is
-/// token-boundary aware (issue #837): a query word admits a file only when it
-/// is a substring of a single token of the file name or path (tokens split on
-/// `/ . _ -` and camelCase boundaries) — not of the whole lowercased string,
-/// so "files" no longer admits "SettingsPanel" and "id" no longer admits
-/// "validity". Case-insensitivity is preserved; substring matching WITHIN a
-/// token is intentional (stem matching, e.g. "auth" -> "authentication").
-fn matching_file_entities<S: Storage>(
-    storage: &S,
-    ctx: &ToolContext<S>,
-    query: &str,
-) -> Vec<Entity> {
-    let words = query_words(query);
-    if words.is_empty() {
-        return Vec::new();
-    }
-
-    storage
-        .list_entities(&ctx.project_id, Some(EntityTier::File))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| !should_exclude_entity(e.path.as_deref(), &ctx.output_dir))
-        .filter(|e| {
-            let name = e.name.to_lowercase();
-            let path = e.path.as_deref().unwrap_or("").to_lowercase();
-            words.iter().any(|w| {
-                crate::retrieval::query_tokenizer::word_matches(&name, w)
-                    || crate::retrieval::query_tokenizer::word_matches(&path, w)
-            })
-        })
         .collect()
 }
 
@@ -286,7 +254,7 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
                 "query": {
                     "type": "string",
                     "title": "Query",
-                    "description": "Keyword or name fragment to search, e.g. 'auth', 'UserService', 'src/api'. Matches file entities by name or path. One call can match several files — batch files into one call rather than one call per file. Not needed when `files` is passed: files-list mode does not use it."
+                    "description": "Keyword or name fragment to search, e.g. 'auth', 'UserService', 'sum_of_squares', 'src/api'. Matches file names/paths and symbol names (functions, types) — an exact symbol-name match ranks above a file-name or path match. One call can match several files — batch files into one call rather than one call per file. Not needed when `files` is passed: files-list mode does not use it."
                 },
                 "files": {
                     "type": "array",
@@ -403,7 +371,7 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
         }
 
         let guard = lock_storage!(self.ctx.storage);
-        let matched = matching_file_entities(&*guard, &self.ctx, q);
+        let (matched, symbol_score) = matching_entities(&*guard, &self.ctx, q);
         let total = matched.len();
         drop(guard);
 
@@ -415,7 +383,9 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
                 .is_empty();
             drop(guard);
             let guidance = if has_entities {
-                "No matching file entities. Try semantic search (search_entities with semantic=true) or a different term."
+                // Requirement 5: no longer recommend search_entities (hidden
+                // behind LIEVO_MCP_TOOLS by default). One neutral message.
+                "No matching files or symbols. Try a different name, pass scope='<dir>' to list a directory, or use your built-in search."
             } else {
                 // Issue #864: the not-indexed guidance no longer tells the
                 // agent to run `lievo refresh` (the agent cannot run lievo
@@ -434,8 +404,11 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
         // Width cap binds BEFORE symbol-building (issue #711): rank by
         // relevance (name hits > path hits, path-stable tiebreak) and cut to
         // max_files so no per-file fs I/O or relationship-scan work is spent
-        // on files that will not be shown.
-        let (matched_trimmed, not_shown) = rank_and_cut(matched, &query_words(q), max_files);
+        // on files that will not be shown. A confirmed symbol raises the file
+        // score (exact symbol-name match > symbol prefix > name > path token).
+        let words = query_words(q);
+        let (matched_trimmed, not_shown) =
+            rank_and_cut_with_symbols(matched, &words, max_files, &symbol_score);
         let returned = matched_trimmed.len();
 
         let guard = lock_storage!(self.ctx.storage);
@@ -456,9 +429,11 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
 
         if returned < total {
             // Breadth was truncated: not-shown count + completeness line so an
-            // agent can tell truncated breadth from exhausted results.
+            // agent can tell truncated breadth from exhausted results. The
+            // continuation names lievo_explore itself — `search_entities` is
+            // hidden behind LIEVO_MCP_TOOLS by default.
             let next_tool = format!(
-                "search_entities(query='{}', limit={})",
+                "lievo_explore(query='{}', max_files={})",
                 q,
                 total.min(MAX_MAX_FILES)
             );

@@ -2,17 +2,23 @@
 //! (issue #711).
 //!
 //! Extracted from `tools_explore.rs` to keep the main file under the 500-line
-//! budget. The score channels are name + path only (no content channel, no
-//! per-file I/O before the cap — PM decision 2026-09-12):
+//! budget. The score channels are name + path + symbol (no content channel,
+//! no per-file I/O before the cap — PM decision 2026-09-12):
 //!
 //!   - a query word hit in the file NAME scores 2
 //!   - a query word hit in the file PATH (and not the name) scores 1
+//!   - a CONFIRMED symbol-name hit raises the containing file's score: exact
+//!     symbol name = 4, symbol name prefix = 2
 //!
 //! A word hitting both name and path counts once at the location max (2), so
 //! no word double-counts — this holds even if `words` itself contains a
 //! duplicate token (e.g. from a query like "auth auth"): `score_file_entity`
 //! deduplicates its input before scoring, so "one distinct word" is enforced
 //! regardless of how many times a word appears in the caller's word list.
+//!
+//! The FINAL score per file is the MAX of the file channel (name+path) and
+//! the symbol channel: an exact symbol-name hit (4) outranks a file name hit
+//! (2) and a path token (1); a symbol prefix (2) outranks a path token (1).
 //! Selection sorts by (score desc, path asc) — a stable, deterministic
 //! tiebreak independent of storage order — and cuts to `max_files` BEFORE
 //! symbol-building, so no I/O or relationship-scan work is spent on files
@@ -89,15 +95,36 @@ pub(crate) fn score_file_entity(entity: &Entity, words: &[String]) -> (i32, Stri
 /// path-based tiebreak (path asc), then cut to `max_files`. Entities that
 /// clear the cut carry `(entity, score, reason)`; `not_shown` is the number
 /// of matched entities cut (0 when the cap did not bind).
-pub(crate) fn rank_and_cut(
+/// Rank + cut with an optional symbol-channel score: each entity's final
+/// score is `max(score_file_entity(entity, words), symbol_score.get(id))`.
+/// An exact symbol-name hit (4) therefore outranks a file name hit (2) and a
+/// path token (1); a symbol prefix (2) outranks a path token (1). The reason
+/// string gains a `symbol: …` clause when the symbol channel raised the
+/// score. `symbol_score` empty (no symbol confirmed) behaves byte-identically
+/// to the pre-symbol behaviour — existing ranking tests keep passing through
+/// this path.
+pub(crate) fn rank_and_cut_with_symbols(
     entities: Vec<Entity>,
     words: &[String],
     max_files: usize,
+    symbol_score: &std::collections::HashMap<String, i32>,
 ) -> (Vec<(Entity, i32, String)>, usize) {
     let mut scored: Vec<(Entity, i32, String)> = entities
         .into_iter()
         .map(|e| {
-            let (s, r) = score_file_entity(&e, words);
+            let (mut s, mut r) = score_file_entity(&e, words);
+            if let Some(sym) = symbol_score.get(&e.id)
+                && *sym > s
+            {
+                s = *sym;
+                r.push_str(
+                    if *sym >= crate::retrieval::tools_explore_symbols::EXACT_SYMBOL_SCORE {
+                        crate::retrieval::tools_explore_symbols::EXACT_SYMBOL_REASON
+                    } else {
+                        crate::retrieval::tools_explore_symbols::PREFIX_SYMBOL_REASON
+                    },
+                );
+            }
             (e, s, r)
         })
         .collect();
@@ -190,7 +217,8 @@ mod tests {
         // def_beta and def_alpha: name hits (2 each), tie → path asc.
         // gamma in a path dir: path hit (1).
         let ents = vec![mk("def_beta"), mk("gamma"), mk("def_alpha")];
-        let (kept, not_shown) = rank_and_cut(ents, &words, 2);
+        let empty = std::collections::HashMap::new();
+        let (kept, not_shown) = rank_and_cut_with_symbols(ents, &words, 2, &empty);
         let names: Vec<String> = kept.iter().map(|(e, _, _)| e.name.clone()).collect();
         assert_eq!(names, vec!["def_alpha", "def_beta"]);
         assert_eq!(not_shown, 1);
@@ -201,7 +229,8 @@ mod tests {
         let words = vec!["def".to_string()];
         let mk = |n: &str| entity(n, n, Some(&format!("files/{n}.rs")));
         let ents = vec![mk("def_a"), mk("def_b")];
-        let (kept, not_shown) = rank_and_cut(ents, &words, 8);
+        let empty = std::collections::HashMap::new();
+        let (kept, not_shown) = rank_and_cut_with_symbols(ents, &words, 8, &empty);
         assert_eq!(kept.len(), 2);
         assert_eq!(not_shown, 0);
     }

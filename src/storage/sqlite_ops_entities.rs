@@ -285,7 +285,7 @@ pub(crate) fn entity_ids_for_paths(
     for chunk in paths.chunks(CHUNK_SIZE) {
         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT id, path FROM entities WHERE repo_id = ?1 AND path IN ({placeholders})"
+            "SELECT id, path FROM entities WHERE repo_id = ?1 AND path IN ({placeholders}) AND tier = 'file'"
         );
 
         let params: Vec<&dyn rusqlite::ToSql> = std::iter::once(&repo_id as &dyn rusqlite::ToSql)

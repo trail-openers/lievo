@@ -339,6 +339,11 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
     // 3. tools/call lievo_explore: indexing-in-progress first, then real
     //    results — poll until the core index (started by the child on serve
     //    start) completes; a tiny repo indexes in seconds, 120s is a bound.
+    //
+    //    The query is the FUNCTION NAME `greet`, which does not appear in
+    //    any file name or path (the only file is `hello.rs`). Before symbol
+    //    matching this returned a zero-match warning; now the containing
+    //    file `hello.rs` must be returned via the symbol channel.
     let (final_text, attempts) =
         call_explore_until_results(&mut stdin, &rx, Duration::from_secs(120), &stderr_path);
     let parsed: serde_json::Value = serde_json::from_str(&final_text)
@@ -356,6 +361,16 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
                  (attempts={attempts}); last response: {final_text}"
             )
         )
+    );
+    // The query names a function, not a file: the containing file must be
+    // present in the results (symbol-name matching, requirement 1).
+    let has_hello = parsed["symbols"]
+        .as_array()
+        .map(|a| a.iter().any(|s| s["qualified_path"] == "hello.rs"))
+        .unwrap_or(false);
+    assert!(
+        has_hello,
+        "the containing file hello.rs must be returned for the function-name query \"greet\"; got: {final_text}"
     );
     assert!(
         !parsed

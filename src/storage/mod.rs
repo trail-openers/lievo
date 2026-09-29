@@ -84,6 +84,42 @@ pub trait Storage {
         project_id: &str,
         tier: Option<EntityTier>,
     ) -> crate::Result<Vec<Entity>>;
+    /// Storage-side prefilter for `lievo_explore` symbol-name matching:
+    /// fetch only symbol-tier entities (the non-file tiers — see
+    /// `crate::retrieval::tools_explore_symbols::SYMBOL_TIERS`) whose
+    /// lowercase name contains ANY plain lowercase query word (OR
+    /// semantics). `words` must be plain lowercase words — no `%` wildcards;
+    /// the implementation owns LIKE pattern formatting. `SqliteStorage`
+    /// overrides with the indexed `LIKE` query (narrow repo_id/path/name
+    /// projection); the default filters `list_entities` in Rust so test
+    /// mocks that don't model the SQL projection still compile.
+    fn symbols_matching_names(
+        &self,
+        project_id: &str,
+        words: &[String],
+    ) -> crate::Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tiers = crate::retrieval::tools_explore_symbols::SYMBOL_TIERS;
+        let mut out: Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate> = Vec::new();
+        for tier in tiers {
+            for e in self.list_entities(project_id, Some(tier))? {
+                let name_lc = e.name.to_lowercase();
+                if words
+                    .iter()
+                    .any(|w| !w.is_empty() && name_lc.contains(w.as_str()))
+                {
+                    out.push(crate::retrieval::tools_explore_symbols::SymbolCandidate {
+                        repo_id: e.repo_id.clone(),
+                        path: e.path,
+                        name: e.name,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
     /// Search entities by name/path substring.
     /// Matches entities where ANY search word appears in name or path (OR semantics).
     /// `words` must be non-empty — passing an empty slice returns an InvalidInput error.
@@ -102,11 +138,29 @@ pub trait Storage {
     ) -> crate::Result<Vec<Entity>>;
     fn entities_by_parent(&self, parent_id: &str) -> crate::Result<Vec<Entity>>;
     fn entity_by_path(&self, repo_id: &str, path: &str) -> crate::Result<Option<Entity>>;
+    /// Batch lookup of File-tier entity ids by path for one repository.
+    ///
+    /// The default scans `entities_by_repo` in Rust (File tier only, exact
+    /// path match) so test storages that model the entity table compile
+    /// without a dedicated implementation; `SqliteStorage` overrides it with
+    /// an indexed `WHERE path IN (...)` query (chunked to respect SQLite's
+    /// bind-variable limit).
     fn entity_ids_for_paths(
         &self,
         repo_id: &str,
         paths: &[&str],
-    ) -> crate::Result<std::collections::HashMap<String, String>>;
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        let wanted: std::collections::HashSet<&str> = paths.iter().copied().collect();
+        let mut map = std::collections::HashMap::new();
+        for e in self.entities_by_repo(repo_id, Some(EntityTier::File))? {
+            if let Some(p) = e.path.as_deref()
+                && wanted.contains(p)
+            {
+                map.insert(p.to_string(), e.id);
+            }
+        }
+        Ok(map)
+    }
     fn entity_by_path_projectwide(
         &self,
         project_id: &str,

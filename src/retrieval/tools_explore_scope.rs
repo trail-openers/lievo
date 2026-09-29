@@ -213,7 +213,7 @@ pub(crate) fn scope_listing<S: Storage>(
 
 /// Read `scope`/`offset` from the call() input and, when `scope` is present
 /// and non-empty, run scope-membership listing instead of word-match. Called
-/// at the top of `ExploreTool::call` before `matching_file_entities` runs.
+/// at the top of `ExploreTool::call` before `matching_entities` runs.
 /// Returns `None` when `scope` is absent (or blank), signaling the caller to
 /// fall through to the word-match path unchanged.
 pub(crate) fn maybe_scope_listing<S: Storage>(

@@ -249,8 +249,6 @@ impl Storage for SqliteStorage {
         sqlite_delete::delete_repo(&self.conn, repo_id)
     }
 
-    // ---- Entity (delegated to sqlite_ops) ----
-
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         sqlite_ops::upsert_entity(&self.conn, entity, &Self::now())
     }
@@ -268,6 +266,39 @@ impl Storage for SqliteStorage {
         sqlite_ops::list_entities(&self.conn, project_id, tier)
     }
 
+    /// The generated SQL (see `queries::build_symbol_name_prefilter_query`) sorts
+    /// exact matches first via `ORDER BY (LOWER(name) = ?N) DESC`, which REUSES
+    /// the same `?N` word parameters as the `LIKE` clauses (SQLite re-evaluates
+    /// bound params in ORDER BY) so exact hits survive the LIMIT window.
+    fn symbols_matching_names(
+        &self,
+        project_id: &str,
+        words: &[String],
+    ) -> Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(sql) = crate::storage::queries::build_symbol_name_prefilter_query(words.len())
+        else {
+            return Ok(Vec::new());
+        };
+        let limit = crate::retrieval::tools_explore_symbols::SYMBOL_PREFILTER_LIMIT as i64;
+        let mut owned: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_id.to_string())];
+        for w in words {
+            owned.push(Box::new(format!("%{}%", w.to_lowercase())));
+        }
+        owned.push(Box::new(limit));
+        let param_refs: Vec<&dyn rusqlite::ToSql> = owned.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(crate::retrieval::tools_explore_symbols::SymbolCandidate {
+                repo_id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })?;
+        sqlite_ops::collect_rows(rows)
+    }
     fn search_entities_by_name(
         &self,
         project_id: &str,

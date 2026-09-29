@@ -209,7 +209,7 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT
 ## libz-sys v1.1.24
 **Licence:** MIT OR Apache-2.0
-## lievo v0.1.0-rc.2
+## lievo v0.1.0-rc.3
 **Licence:** AGPL-3.0-only
 ## link-cplusplus v1.0.12
 **Licence:** MIT OR Apache-2.0
