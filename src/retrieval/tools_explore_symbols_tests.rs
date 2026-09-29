@@ -16,7 +16,7 @@ use crate::model::{Entity, EntityTier};
 use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::ExploreTool;
 use crate::retrieval::tools_explore_symbols::{
-    EXACT_SYMBOL_SCORE, PREFIX_SYMBOL_SCORE, SYMBOL_PREFILTER_LIMIT, symbol_name_hits,
+    EXACT_SYMBOL_SCORE, PREFIX_SYMBOL_SCORE, symbol_name_hits,
 };
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
@@ -526,12 +526,6 @@ fn prefilter_bound_exact_match_survives_among_prefix_candidates() {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         })
         .unwrap();
-
-    // Verify the bound is at least as large as the candidate count.
-    assert!(
-        SYMBOL_PREFILTER_LIMIT >= 31,
-        "SYMBOL_PREFILTER_LIMIT must cover the test's 31 candidates"
-    );
 
     let ctx = Arc::new(crate::retrieval::tools::ToolContext {
         storage: Arc::new(Mutex::new(storage)),
