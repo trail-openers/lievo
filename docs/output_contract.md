@@ -140,7 +140,7 @@ Note: The `rel_type` field indicates the relationship direction context within t
 
 | Field | Type | Description |
 |---|---|---|
-| `version` | string | lievo version (e.g. "0.1.0") |
+| `version` | string | lievo version (the version in Cargo.toml) |
 | `data_dir` | string | The data directory actually used (parent of `db_path`) |
 | `db_path` | string | The database file path actually used (honours `LIEVO_DB`) |
 | `db_writable` | bool | Whether the data directory is writable (probed via a temp file) |

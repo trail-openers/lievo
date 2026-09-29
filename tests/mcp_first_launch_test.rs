@@ -282,7 +282,7 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
             "params": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "lievo-first-launch-test", "version": "0.1.0" }
+                "clientInfo": { "name": "lievo-first-launch-test", "version": "0.0.0-test" }
             }
         }),
     );

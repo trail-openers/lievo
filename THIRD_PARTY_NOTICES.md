@@ -237,7 +237,7 @@ the dependency set changes.
 **Licence:** MIT
 ## libz-sys v1.1.24
 **Licence:** MIT OR Apache-2.0
-## lievo v0.1.0
+## lievo v0.1.0-rc.1
 **Licence:** AGPL-3.0-only
 ## link-cplusplus v1.0.12
 **Licence:** MIT OR Apache-2.0
