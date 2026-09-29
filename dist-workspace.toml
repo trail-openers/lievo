@@ -20,3 +20,5 @@ pr-run-mode = "plan"
 cache-builds = true
 # Ship the third-party licence notices in every archive and installer.
 include = ["THIRD_PARTY_NOTICES.md"]
+# numkong 7.6.0 probe over-reporting on GCC 11 (see .github/build-setup.yml).
+github-build-setup = "../build-setup.yml"
