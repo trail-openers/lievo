@@ -80,10 +80,12 @@ fn lievo_bin() -> PathBuf {
 /// The single file is `widgets.rs` with two functions: `assemble_frame`
 /// (the one the test queries by name) and `main`, which CALLS it, so the
 /// real indexer produces Function-tier entities for both plus a Calls edge.
-/// `assemble_frame` cannot match any file name or path: the file's tokens
-/// are [widgets, rs] and the query word's tokens are [assemble, frame], so
-/// the file channel (name/path prefix matching) admits nothing — the result
-/// must come from the symbol channel.
+/// `assemble_frame` cannot match any file name or path: the query is one
+/// word, `assemble_frame`, which the matcher splits into the tokens
+/// [assemble, frame]; neither is a prefix of the file's tokens [widgets, rs],
+/// so the file channel admits nothing and the result must come from the
+/// symbol channel. ("Exact" there means the whole query word equals the
+/// symbol name, case-insensitively.)
 fn git_repo() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
@@ -355,9 +357,9 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
     //    start) completes; a tiny repo indexes in seconds, 120s is a bound.
     //
     //    The query is the FUNCTION NAME `assemble_frame`, which does not
-    //    match any file name or path: the only file is `widgets.rs`
-    //    (tokens [widgets, rs]) and the query's tokens are [assemble,
-    //    frame], so the file channel admits nothing. Before symbol matching
+    //    match any file name or path (see `git_repo`), so the file channel
+    //    admits nothing; the test also asserts the reason carries no
+    //    `name:`/`path:` clause. Before symbol matching
     //    this returned a zero-match warning; now the containing file
     //    `widgets.rs` must be returned via the symbol channel, and its
     //    response `reason` must carry the exact-symbol-match clause
@@ -407,9 +409,11 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
             a.iter().any(|s| {
                 s["qualified_path"] == "widgets.rs"
                     && s["score"] == 4
-                    && s["reason"]
-                        .as_str()
-                        .is_some_and(|r| r.contains("symbol: exact name match"))
+                    && s["reason"].as_str().is_some_and(|r| {
+                        r.contains("symbol: exact name match")
+                            && !r.contains("name:")
+                            && !r.contains("path:")
+                    })
             })
         })
         .unwrap_or(false);
