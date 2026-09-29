@@ -101,7 +101,7 @@ When splitting work from `docs/spec.md` into issues:
 
 lievo is released as prebuilt binaries via cargo-dist. A release is triggered by a semver tag (e.g. `v0.1.0`) pushed by the operator; cargo-dist only publishes a tag whose version matches the package version in `Cargo.toml`, so the version must be bumped first.
 
-A release candidate: PR bumping `Cargo.toml` (and `Cargo.lock`) to `X.Y.Z-rc.N` → merge → tag `vX.Y.Z-rc.N` (cargo-dist builds a GitHub pre-release). The final release: PR bumping to `X.Y.Z` and setting the date on the `## [X.Y.Z]` heading in `CHANGELOG.md` → merge → tag `vX.Y.Z`. Note that `releases/latest/download/` installer URLs in the docs only start working once the first non-prerelease is out.
+A release candidate: PR bumping `Cargo.toml` (and `Cargo.lock`) to `X.Y.Z-rc.N`, and the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md` (or regenerate the file, see below) → merge → tag `vX.Y.Z-rc.N` (cargo-dist builds a GitHub pre-release). The final release: PR bumping to `X.Y.Z` and setting the date on the `## [X.Y.Z]` heading in `CHANGELOG.md` → merge → tag `vX.Y.Z`. Note that `releases/latest/download/` installer URLs in the docs only start working once the first non-prerelease is out.
 
 ### Regenerating third-party notices
 
@@ -128,8 +128,6 @@ On a clean macOS (Apple Silicon or Intel):
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/download/v0.1.0-rc.1/lievo-installer.sh | sh
 lievo --version
 # Verify MCP responds to an initialize request:
-# (run lievo mcp in a terminal, then in another terminal send the JSON-RPC line)
-lievo mcp
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1
 ```
 
@@ -137,16 +135,15 @@ On a clean Linux (x86_64 or ARM):
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/download/v0.1.0-rc.1/lievo-installer.sh | sh
 lievo --version
-lievo mcp
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1
 ```
 
-Both should print `lievo 0.1.0` and a JSON-RPC response with `serverInfo`.
+Both should print `lievo` followed by the version in `Cargo.toml` (`lievo 0.1.0-rc.1` for this dry run) and a JSON-RPC response with `serverInfo`.
 
 ### Cutting the real release
 
 1. Confirm the dry run succeeded and the smoke test passed.
-2. **Bump to the final version**: PR bumping `Cargo.toml` (and `Cargo.lock`) from `0.1.0-rc.1` to `0.1.0` → merge.
+2. **Bump to the final version**: PR bumping `Cargo.toml` (and `Cargo.lock`) from `0.1.0-rc.1` to `0.1.0`, and the `## lievo` heading in `THIRD_PARTY_NOTICES.md` → merge.
 3. **Set the changelog date**: in `CHANGELOG.md`, replace the `- Unreleased` placeholder on the `## [0.1.0]` heading with today's date in `YYYY-MM-DD` form, leaving the rest of the entry untouched. Commit this in a normal PR and merge it — do **not** do this in the release commit itself.
 4. From the merge commit on `main`, push the final tag: `git tag v0.1.0 && git push origin v0.1.0`. The tag must point at the merge commit that carries the dated changelog, so the GitHub Release body renders the correct version section.
 5. The release workflow creates a GitHub release with all artifacts.
