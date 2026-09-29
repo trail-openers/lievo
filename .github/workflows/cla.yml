@@ -8,11 +8,18 @@ on:
 
 # Minimal permissions for signature bookkeeping. This workflow uses
 # pull_request_target (never pull_request) and deliberately does NOT
-# check out or execute PR code — it only reads PR comments/metadata and
-# writes the signatures file.
+# check out or execute PR code — it only reads PR comments/metadata.
+# Signatures (GitHub usernames) are stored in the private repository
+# trail-openers/lievo-cla for data-protection reasons, so this job no
+# longer writes to this repository's contents: contents: read suffices
+# here (the action's README notes contents may be 'read' when signatures
+# are in a remote repository). The PERSONAL_ACCESS_TOKEN secret is a
+# fine-grained token scoped to lievo-cla only. Since the workflow never
+# checks out or runs contributors' code, the secret is not exposed to
+# their code.
 permissions:
   actions: write
-  contents: write
+  contents: read
   pull-requests: write
   statuses: write
 
@@ -26,12 +33,16 @@ jobs:
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained token with contents read/write on lievo-cla only.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'CLA.md'
-          # Signatures go to their own branch: main is protected (PRs only),
-          # so the action could not push to it.
-          branch: 'cla-signatures'
+          # Remote (private) repository that holds the signatures; branch is
+          # that repository's default branch.
+          remote-organization-name: 'trail-openers'
+          remote-repository-name: 'lievo-cla'
+          branch: 'master'
           # Exact accounts only: the maintainer (a copyright holder, who does
           # not sign a licence to themselves) and two bots. A pattern such as
           # 'bot*' would also exempt any human whose username starts with "bot".
