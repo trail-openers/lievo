@@ -405,66 +405,74 @@ mod tests {
     /// must rank above a file matched only by a path token.
     #[test]
     fn exact_symbol_ranks_above_path_token_match() {
-        use std::sync::{Arc, Mutex};
         use crate::retrieval::tool_trait::Tool;
         use crate::retrieval::tools::{ExploreTool, ToolContext};
         use crate::storage::sqlite::SqliteStorage;
         use serde_json::json;
+        use std::sync::{Arc, Mutex};
 
         let storage = SqliteStorage::open_in_memory().unwrap();
         let project = storage.create_project("rank-test", None).unwrap();
-        let repo = storage.add_repo(&project.id, "repo1", "/tmp/repo1").unwrap();
+        let repo = storage
+            .add_repo(&project.id, "repo1", "/tmp/repo1")
+            .unwrap();
 
         // File A: path contains the query word "alpha" but no symbol does.
         let file_a_id = format!("{}:repo1:file:src/alpha/beta.rs", project.id);
-        storage.upsert_entity(&Entity {
-            id: file_a_id.clone(),
-            project_id: project.id.clone(),
-            repo_id: Some(repo.id.clone()),
-            tier: EntityTier::File,
-            parent_id: None,
-            name: "beta".to_string(),
-            path: Some("src/alpha/beta.rs".to_string()),
-            language: Some("Rust".to_string()),
-            summary: None,
-            summary_commit: None,
-            metrics_json: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        }).unwrap();
+        storage
+            .upsert_entity(&Entity {
+                id: file_a_id.clone(),
+                project_id: project.id.clone(),
+                repo_id: Some(repo.id.clone()),
+                tier: EntityTier::File,
+                parent_id: None,
+                name: "beta".to_string(),
+                path: Some("src/alpha/beta.rs".to_string()),
+                language: Some("Rust".to_string()),
+                summary: None,
+                summary_commit: None,
+                metrics_json: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
 
         // File B: path does NOT contain "alpha", but has a function named "alpha".
         let file_b_id = format!("{}:repo1:file:src/gamma.rs", project.id);
-        storage.upsert_entity(&Entity {
-            id: file_b_id.clone(),
-            project_id: project.id.clone(),
-            repo_id: Some(repo.id.clone()),
-            tier: EntityTier::File,
-            parent_id: None,
-            name: "gamma".to_string(),
-            path: Some("src/gamma.rs".to_string()),
-            language: Some("Rust".to_string()),
-            summary: None,
-            summary_commit: None,
-            metrics_json: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        }).unwrap();
-        storage.upsert_entity(&Entity {
-            id: format!("{}:repo1:fn:src/gamma.rs:alpha", project.id),
-            project_id: project.id.clone(),
-            repo_id: Some(repo.id.clone()),
-            tier: EntityTier::Function,
-            parent_id: Some(file_b_id.clone()),
-            name: "alpha".to_string(),
-            path: Some("src/gamma.rs".to_string()),
-            language: Some("Rust".to_string()),
-            summary: None,
-            summary_commit: None,
-            metrics_json: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        }).unwrap();
+        storage
+            .upsert_entity(&Entity {
+                id: file_b_id.clone(),
+                project_id: project.id.clone(),
+                repo_id: Some(repo.id.clone()),
+                tier: EntityTier::File,
+                parent_id: None,
+                name: "gamma".to_string(),
+                path: Some("src/gamma.rs".to_string()),
+                language: Some("Rust".to_string()),
+                summary: None,
+                summary_commit: None,
+                metrics_json: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_entity(&Entity {
+                id: format!("{}:repo1:fn:src/gamma.rs:alpha", project.id),
+                project_id: project.id.clone(),
+                repo_id: Some(repo.id.clone()),
+                tier: EntityTier::Function,
+                parent_id: Some(file_b_id.clone()),
+                name: "alpha".to_string(),
+                path: Some("src/gamma.rs".to_string()),
+                language: Some("Rust".to_string()),
+                summary: None,
+                summary_commit: None,
+                metrics_json: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
 
         let ctx = Arc::new(ToolContext {
             storage: Arc::new(Mutex::new(storage)),
@@ -479,8 +487,14 @@ mod tests {
         let symbols = v["symbols"].as_array().expect("symbols");
         assert!(symbols.len() >= 2, "expected both files, got: {symbols:?}");
         // File B (symbol exact match, score 4) must rank above File A (path token, score 1).
-        let b_idx = symbols.iter().position(|s| s["qualified_path"] == "src/gamma.rs").unwrap();
-        let a_idx = symbols.iter().position(|s| s["qualified_path"] == "src/alpha/beta.rs").unwrap();
+        let b_idx = symbols
+            .iter()
+            .position(|s| s["qualified_path"] == "src/gamma.rs")
+            .unwrap();
+        let a_idx = symbols
+            .iter()
+            .position(|s| s["qualified_path"] == "src/alpha/beta.rs")
+            .unwrap();
         assert!(
             b_idx < a_idx,
             "exact symbol match (src/gamma.rs, idx {b_idx}) must rank above path-token match (src/alpha/beta.rs, idx {a_idx}); got: {symbols:?}"
