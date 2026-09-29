@@ -76,10 +76,22 @@ fn lievo_bin() -> PathBuf {
 }
 
 /// Fresh tempdir git repo with one file and one commit on main.
+///
+/// The single file is `widgets.rs` with two functions: `assemble_frame`
+/// (the one the test queries by name) and `main`, which CALLS it, so the
+/// real indexer produces Function-tier entities for both plus a Calls edge.
+/// `assemble_frame` cannot match any file name or path: the file's tokens
+/// are [widgets, rs] and the query word's tokens are [assemble, frame], so
+/// the file channel (name/path prefix matching) admits nothing — the result
+/// must come from the symbol channel.
 fn git_repo() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
-    std::fs::write(root.join("hello.rs"), "fn hello() -> u32 {\n    42\n}\n").unwrap();
+    std::fs::write(
+        root.join("widgets.rs"),
+        "fn assemble_frame() -> u32 {\n    42\n}\n\nfn main() {\n    assemble_frame();\n}\n",
+    )
+    .unwrap();
     let repo = git2::Repository::init(&root).unwrap();
     repo.set_head("refs/heads/main").unwrap();
     let mut index = repo.index().unwrap();
@@ -208,6 +220,7 @@ fn call_explore(
     id: i64,
     deadline: Instant,
     stderr_path: &std::path::Path,
+    query: &str,
 ) -> String {
     send(
         stdin,
@@ -217,7 +230,7 @@ fn call_explore(
             "method": "tools/call",
             "params": {
                 "name": "lievo_explore",
-                "arguments": { "query": "hello" }
+                "arguments": { "query": query }
             }
         }),
     );
@@ -243,6 +256,7 @@ fn call_explore_until_results(
     rx: &Receiver<String>,
     deadline: Duration,
     stderr_path: &std::path::Path,
+    query: &str,
 ) -> (String, u32) {
     let start = Instant::now();
     let mut id = 100_i64;
@@ -250,7 +264,7 @@ fn call_explore_until_results(
     loop {
         id += 1;
         attempts += 1;
-        let text = call_explore(stdin, rx, id, start + deadline, stderr_path);
+        let text = call_explore(stdin, rx, id, start + deadline, stderr_path, query);
         let parsed: serde_json::Value =
             serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         let has_symbols = parsed
@@ -340,12 +354,22 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
     //    results — poll until the core index (started by the child on serve
     //    start) completes; a tiny repo indexes in seconds, 120s is a bound.
     //
-    //    The query is the FUNCTION NAME `greet`, which does not appear in
-    //    any file name or path (the only file is `hello.rs`). Before symbol
-    //    matching this returned a zero-match warning; now the containing
-    //    file `hello.rs` must be returned via the symbol channel.
-    let (final_text, attempts) =
-        call_explore_until_results(&mut stdin, &rx, Duration::from_secs(120), &stderr_path);
+    //    The query is the FUNCTION NAME `assemble_frame`, which does not
+    //    match any file name or path: the only file is `widgets.rs`
+    //    (tokens [widgets, rs]) and the query's tokens are [assemble,
+    //    frame], so the file channel admits nothing. Before symbol matching
+    //    this returned a zero-match warning; now the containing file
+    //    `widgets.rs` must be returned via the symbol channel, and its
+    //    response `reason` must carry the exact-symbol-match clause
+    //    ("symbol: exact name match", score 4) proving the match came from
+    //    the symbol channel, not a file-name or path-token hit.
+    let (final_text, attempts) = call_explore_until_results(
+        &mut stdin,
+        &rx,
+        Duration::from_secs(120),
+        &stderr_path,
+        "assemble_frame",
+    );
     let parsed: serde_json::Value = serde_json::from_str(&final_text)
         .unwrap_or_else(|_| panic!("explore response must be JSON: {final_text}"));
     assert!(
@@ -364,13 +388,34 @@ fn mcp_first_launch_serves_explore_and_indexes_in_background() {
     );
     // The query names a function, not a file: the containing file must be
     // present in the results (symbol-name matching, requirement 1).
-    let has_hello = parsed["symbols"]
+    let has_widgets = parsed["symbols"]
         .as_array()
-        .map(|a| a.iter().any(|s| s["qualified_path"] == "hello.rs"))
+        .map(|a| a.iter().any(|s| s["qualified_path"] == "widgets.rs"))
         .unwrap_or(false);
     assert!(
-        has_hello,
-        "the containing file hello.rs must be returned for the function-name query \"greet\"; got: {final_text}"
+        has_widgets,
+        "the containing file widgets.rs must be returned for the function-name query \"assemble_frame\"; got: {final_text}"
+    );
+    // The match must have come from the SYMBOL channel, not a file-name or
+    // path-token hit: an exact symbol-name match outranks every file-channel
+    // score (4 > 2 > 1) and the ranker appends the clause
+    // "symbol: exact name match" to the reason. No file channel can produce
+    // that text, so asserting on it proves the symbol channel fired.
+    let symbol_channel_hit = parsed["symbols"]
+        .as_array()
+        .map(|a| {
+            a.iter().any(|s| {
+                s["qualified_path"] == "widgets.rs"
+                    && s["score"] == 4
+                    && s["reason"]
+                        .as_str()
+                        .is_some_and(|r| r.contains("symbol: exact name match"))
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        symbol_channel_hit,
+        "widgets.rs must be ranked via an exact symbol-name match (score 4, reason \"symbol: exact name match\") for the query \"assemble_frame\"; got: {final_text}"
     );
     assert!(
         !parsed
