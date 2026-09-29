@@ -485,8 +485,7 @@ pub fn build_symbol_name_prefilter_query(word_count: usize) -> Option<String> {
         .collect();
     let limit_param = word_count + 2;
     Some(format!(
-        r#"
-SELECT repo_id, path, name
+        r#"SELECT repo_id, path, name
 FROM entities
 WHERE project_id = ?1
   AND tier <> 'file' -- see tools_explore_symbols::SYMBOL_TIERS
