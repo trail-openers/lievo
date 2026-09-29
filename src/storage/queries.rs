@@ -458,20 +458,21 @@ LIMIT ?{}
     sql
 }
 
-/// Build a parameterized query that fetches ONLY symbol-tier entities
-/// (Function/Module/Subsystem — i.e. `tier <> 'file'`) whose name
-/// lowercase-contains ANY search word (OR semantics). Storage-side
-/// prefilter: the retrieval layer re-confirms each candidate with the token
-/// matcher (`query_tokenizer::word_matches`) before it counts as a hit.
+/// Build the parameterized prefilter query: ONLY symbol-tier entities
+/// (non-file — the SQL keeps `tier <> 'file'`; the tier set is documented by
+/// `tools_explore_symbols::SYMBOL_TIERS`, which the trait default filters by
+/// — keep both in sync) whose name lowercase-contains ANY search word (OR
+/// semantics). Narrow (repo_id, path, name) projection so a large index does
+/// not enter the process; `repo_id` lets each candidate resolve against the
+/// repo it lives in (multi-repo projects).
 ///
-/// Used by `lievo_explore` query mode to resolve symbol names to their
-/// containing files without loading the whole entity table per call: the
-/// scan runs in SQL over a narrow projection (id, path, name — no summary
-/// or metrics blobs), so a large repo's index does not enter the process.
+/// Bounded work: exact-name matches sort first, then `LIMIT` caps rows so a
+/// common word cannot pull tens of thousands of rows; an exact match is cut
+/// only when more than the limit of them exist.
 ///
-/// Params: `?1` = project_id, `?2..?N+1` = one lowercase word per OR clause.
-/// Returns `None` for an empty word list (no valid SQL to build; the caller
-/// treats that as "no candidates", never a SQL error).
+/// Params: `?1` = project_id, `?2..?N+1` = one lowercase word per OR clause,
+/// `?N+2` = the limit; `None` for an empty word list (treated as "no
+/// candidates", never a SQL error).
 pub fn build_symbol_name_prefilter_query(word_count: usize) -> Option<String> {
     if word_count == 0 {
         return None;
@@ -479,14 +480,22 @@ pub fn build_symbol_name_prefilter_query(word_count: usize) -> Option<String> {
     let word_clauses: Vec<String> = (0..word_count)
         .map(|i| format!("LOWER(name) LIKE '%' || ?{} || '%'", i + 2))
         .collect();
+    let exact_clauses: Vec<String> = (0..word_count)
+        .map(|i| format!("LOWER(name) = ?{}", i + 2))
+        .collect();
+    let limit_param = word_count + 2;
     Some(format!(
         r#"
-SELECT path, name
+SELECT repo_id, path, name
 FROM entities
 WHERE project_id = ?1
-  AND tier <> 'file'
+  AND tier <> 'file' -- see tools_explore_symbols::SYMBOL_TIERS
   AND ({})
+ORDER BY ({}) DESC
+LIMIT ?{}
 "#,
-        word_clauses.join("\n    OR ")
+        word_clauses.join("\n    OR "),
+        exact_clauses.join(" OR "),
+        limit_param
     ))
 }

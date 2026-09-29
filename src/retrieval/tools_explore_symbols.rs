@@ -10,14 +10,15 @@
 //! matching:
 //!
 //!   - Storage-side prefilter (`Storage::symbols_matching_names`): a SQL
-//!     `LIKE` scan over the narrow (path, name) projection of the non-file
-//!     tiers (`build_symbol_name_prefilter_query`), so a large index does not
-//!     enter the process per call.
+//!     `LIKE` scan over the narrow (repo_id, path, name) projection of the
+//!     non-file tiers, so a large index does not enter the process per call.
+//!     Each candidate carries its own repo_id so symbols resolve against the
+//!     repo they live in.
 //!   - Rust-side confirmation with the SAME token matcher files use
 //!     (`query_tokenizer::word_matches` on `query_words`), so symbol
 //!     admission and file admission can never diverge.
 //!   - Resolution to containing files via `entity_ids_for_paths` (one
-//!     batched lookup per repo).
+//!     batched lookup per repo, using that repo's confirmed symbols only).
 //!
 //! Ranking (requirement: an exact symbol-name hit outranks a file path token
 //! and a symbol-name prefix): the containing file's final score is the MAX of
@@ -43,17 +44,45 @@ pub(crate) const EXACT_SYMBOL_SCORE: i32 = 4;
 /// for a query word. Above a path-token hit (1), at a name hit (2).
 pub(crate) const PREFIX_SYMBOL_SCORE: i32 = 2;
 
+/// Reason text appended when the symbol channel outranks the file channel
+/// and the symbol name EQUALS a query word.
+pub(crate) const EXACT_SYMBOL_REASON: &str = "; symbol: exact name match";
+/// Reason text appended when the symbol channel outranks the file channel
+/// and the symbol name is a token-prefix match for a query word.
+pub(crate) const PREFIX_SYMBOL_REASON: &str = "; symbol: name prefix match";
+
+/// The entity tiers the symbol channel prefilter covers (everything that
+/// carries a name and lives inside a file). Kept in one place: the SQL
+/// prefilter keeps `tier <> 'file'` (the inverse of the file tier) and the
+/// trait default filters by this set — both must stay in sync, so the SQL
+/// side carries a comment pointing here.
+pub const SYMBOL_TIERS: [EntityTier; 3] = [
+    EntityTier::Function,
+    EntityTier::Module,
+    EntityTier::Subsystem,
+];
+
+/// Upper bound on prefilter rows returned per call. Exact-name matches sort
+/// first (`ORDER BY (LOWER(name) = …) DESC`), so a common word cannot push an
+/// exact match out of the window unless there are more than this many exact
+/// matches.
+pub const SYMBOL_PREFILTER_LIMIT: usize = 2000;
+
 /// A symbol-tier entity returned by the storage-side prefilter (the narrow
-/// `path, name` projection — no id, summary, or metrics blobs).
+/// `repo_id, path, name` projection — no summary or metrics blobs). `repo_id`
+/// is `Option<String>` because the projection column is nullable for
+/// entities stored outside a repo.
 #[derive(Debug, Clone)]
 pub struct SymbolCandidate {
+    pub repo_id: Option<String>,
     pub path: Option<String>,
     pub name: String,
 }
 
 /// Run the storage-side prefilter. An empty word set (all stop words) yields
 /// an empty vector without a SQL call; a storage error degrades to the file
-/// channel only (never an error out of query mode).
+/// channel only (never an error out of query mode) — the degraded call is
+/// logged via `tracing` (no stdout; MCP stdio).
 fn prefilter_symbols<S: Storage>(
     storage: &S,
     project_id: &str,
@@ -63,26 +92,15 @@ fn prefilter_symbols<S: Storage>(
     if words.is_empty() {
         return Vec::new();
     }
-    // Params: project_id first, then one `%word%` LIKE term per query word —
-    // the exact shape `build_symbol_name_prefilter_query(words.len())`
-    // documents. Kept in one place so the param contract has a single
-    // construction site (see symbol_prefilter_params).
-    let strings = symbol_prefilter_params(project_id, &words).unwrap_or_default();
-    storage.symbols_matching_names(&strings).unwrap_or_default()
-}
-
-/// Build the prefilter param vector as (project_id, formatted word LIKE
-/// terms). Pure helper so the param shape has a single construction site
-/// with a test.
-pub(crate) fn symbol_prefilter_params(project_id: &str, words: &[String]) -> Option<Vec<String>> {
-    if words.is_empty() {
-        return None;
-    }
-    Some(
-        std::iter::once(project_id.to_string())
-            .chain(words.iter().map(|w| format!("%{w}%")))
-            .collect(),
-    )
+    // The trait takes plain lowercase words; the SQL-side LIKE pattern
+    // formatting lives in the SqliteStorage override (single construction
+    // site there).
+    storage
+        .symbols_matching_names(project_id, &words)
+        .unwrap_or_else(|err| {
+            tracing::warn!("lievo_explore symbol prefilter degraded to file channel only: {err}");
+            Vec::new()
+        })
 }
 
 /// Confirm a prefiltered candidate with the token matcher: the lowercased
@@ -144,57 +162,86 @@ pub(crate) fn matching_entities<S: Storage>(
         });
 
     // --- Symbol channel ---
+    // Each candidate carries its own repo from the prefilter projection, so
+    // a symbol in repo B is found even when repo A (listed first) has a file
+    // at the same relative path — confirmed symbols are grouped by repo_id
+    // and `entity_ids_for_paths` is called once per repo with that repo's
+    // own paths.
     let confirmed: Vec<SymbolCandidate> = prefilter_symbols(storage, &ctx.project_id, query)
         .into_iter()
-        .filter(|c| c.path.is_some() && symbol_name_hits(&c.name, &words).is_some())
+        .filter(|c| {
+            c.path.is_some() && c.repo_id.is_some() && symbol_name_hits(&c.name, &words).is_some()
+        })
         .collect();
 
     let mut symbol_score: HashMap<String, i32> = HashMap::new();
+    let mut seen_file_ids: HashSet<String> = HashSet::new();
     let mut containing_file_ids: Vec<String> = Vec::new();
     if !confirmed.is_empty() {
-        let mut distinct_paths: Vec<&str> =
-            confirmed.iter().filter_map(|c| c.path.as_deref()).collect();
-        distinct_paths.sort_unstable();
-        distinct_paths.dedup();
-
-        let repos = storage.list_repos(&ctx.project_id).unwrap_or_default();
-
-        // Batched lookup via `entity_ids_for_paths`.
-        for repo in &repos {
-            let id_by_path = storage
-                .entity_ids_for_paths(&repo.id, &distinct_paths)
-                .unwrap_or_default();
-            if !id_by_path.is_empty() {
-                for c in &confirmed {
-                    let Some(path) = c.path.as_deref() else {
-                        continue;
-                    };
-                    let Some(file_id) = id_by_path.get(path) else {
-                        continue;
-                    };
-                    let exact = symbol_name_hits(&c.name, &words).is_some_and(|(e, _)| e);
-                    match symbol_score.entry(file_id.clone()) {
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            symbol_score.insert(
-                                file_id.clone(),
-                                if exact {
-                                    EXACT_SYMBOL_SCORE
-                                } else {
-                                    PREFIX_SYMBOL_SCORE
-                                },
-                            );
-                            if !containing_file_ids.iter().any(|x| x == file_id) {
-                                containing_file_ids.push(file_id.clone());
-                            }
-                        }
-                        std::collections::hash_map::Entry::Occupied(mut occ) => {
-                            if exact && *occ.get() < EXACT_SYMBOL_SCORE {
-                                *occ.get_mut() = EXACT_SYMBOL_SCORE;
-                            }
+        // Group confirmed symbols by their own repo_id; distinct paths per
+        // repo (sorted for a stable lookup).
+        let mut paths_by_repo: HashMap<String, Vec<String>> = HashMap::new();
+        let mut symbols_by_repo: HashMap<String, Vec<&SymbolCandidate>> = HashMap::new();
+        for c in &confirmed {
+            let Some(repo_id) = c.repo_id.clone() else {
+                continue;
+            };
+            let Some(path) = c.path.clone() else {
+                continue;
+            };
+            symbols_by_repo.entry(repo_id.clone()).or_default().push(c);
+            paths_by_repo.entry(repo_id).or_default().push(path);
+        }
+        for paths in paths_by_repo.values_mut() {
+            paths.sort();
+            paths.dedup();
+        }
+        for (repo_id, repo_paths) in &paths_by_repo {
+            let repo_paths_slice: Vec<&str> = repo_paths.iter().map(String::as_str).collect();
+            let id_by_path = match storage.entity_ids_for_paths(repo_id, &repo_paths_slice) {
+                Ok(map) => map,
+                Err(err) => {
+                    tracing::warn!(
+                        "lievo_explore symbol resolution degraded for repo {repo_id}: {err}"
+                    );
+                    continue;
+                }
+            };
+            let Some(symbols) = symbols_by_repo.get(repo_id) else {
+                continue;
+            };
+            for c in symbols {
+                let Some(path) = c.path.as_deref() else {
+                    continue;
+                };
+                let Some(file_id) = id_by_path.get(path) else {
+                    continue;
+                };
+                let Some(hits) = symbol_name_hits(&c.name, &words) else {
+                    continue;
+                };
+                let score = if hits.0 {
+                    EXACT_SYMBOL_SCORE
+                } else {
+                    PREFIX_SYMBOL_SCORE
+                };
+                // A file with both an exact and a prefix symbol takes the
+                // exact score.
+                match symbol_score.get_mut(file_id) {
+                    Some(existing) => {
+                        if score > *existing {
+                            *existing = score;
                         }
                     }
+                    None => {
+                        symbol_score.insert(file_id.clone(), score);
+                    }
                 }
-                break;
+                // De-duplicate containing files while preserving first-seen
+                // (admission) order.
+                if seen_file_ids.insert(file_id.clone()) {
+                    containing_file_ids.push(file_id.clone());
+                }
             }
         }
     }
@@ -204,8 +251,17 @@ pub(crate) fn matching_entities<S: Storage>(
     let mut matched: Vec<Entity> = direct.filter(|e| seen_ids.insert(e.id.clone())).collect();
 
     for file_id in &containing_file_ids {
-        if let Some(entity) = storage.get_entity(file_id).ok().flatten()
-            && entity.tier == EntityTier::File
+        let Some(entity) = storage.get_entity(file_id).unwrap_or_else(|err| {
+            // Storage degraded for one file: log, keep the rest, never
+            // surface an error out of query mode.
+            tracing::debug!("lievo_explore skipping containing file {file_id}: {err}");
+            None
+        }) else {
+            // Ok(None): the file entity is gone (stale prefilter row) — skip
+            // silently.
+            continue;
+        };
+        if entity.tier == EntityTier::File
             && !should_exclude_entity(entity.path.as_deref(), &ctx.output_dir)
             && seen_ids.insert(entity.id.clone())
         {

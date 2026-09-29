@@ -2,17 +2,23 @@
 //! (issue #711).
 //!
 //! Extracted from `tools_explore.rs` to keep the main file under the 500-line
-//! budget. The score channels are name + path only (no content channel, no
-//! per-file I/O before the cap — PM decision 2026-09-12):
+//! budget. The score channels are name + path + symbol (no content channel,
+//! no per-file I/O before the cap — PM decision 2026-09-12):
 //!
 //!   - a query word hit in the file NAME scores 2
 //!   - a query word hit in the file PATH (and not the name) scores 1
+//!   - a CONFIRMED symbol-name hit raises the containing file's score: exact
+//!     symbol name = 4, symbol name prefix = 2
 //!
 //! A word hitting both name and path counts once at the location max (2), so
 //! no word double-counts — this holds even if `words` itself contains a
 //! duplicate token (e.g. from a query like "auth auth"): `score_file_entity`
 //! deduplicates its input before scoring, so "one distinct word" is enforced
 //! regardless of how many times a word appears in the caller's word list.
+//!
+//! The FINAL score per file is the MAX of the file channel (name+path) and
+//! the symbol channel: an exact symbol-name hit (4) outranks a file name hit
+//! (2) and a path token (1); a symbol prefix (2) outranks a path token (1).
 //! Selection sorts by (score desc, path asc) — a stable, deterministic
 //! tiebreak independent of storage order — and cuts to `max_files` BEFORE
 //! symbol-building, so no I/O or relationship-scan work is spent on files
@@ -113,9 +119,9 @@ pub(crate) fn rank_and_cut_with_symbols(
                 s = *sym;
                 r.push_str(
                     if *sym >= crate::retrieval::tools_explore_symbols::EXACT_SYMBOL_SCORE {
-                        "; symbol: exact name match"
+                        crate::retrieval::tools_explore_symbols::EXACT_SYMBOL_REASON
                     } else {
-                        "; symbol: name prefix match"
+                        crate::retrieval::tools_explore_symbols::PREFIX_SYMBOL_REASON
                     },
                 );
             }

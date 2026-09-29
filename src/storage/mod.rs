@@ -85,42 +85,34 @@ pub trait Storage {
         tier: Option<EntityTier>,
     ) -> crate::Result<Vec<Entity>>;
     /// Storage-side prefilter for `lievo_explore` symbol-name matching:
-    /// fetch only symbol-tier entities (non-file) whose name contains one of
-    /// the preformatted `%word%` LIKE terms. Params match
-    /// `queries::build_symbol_name_prefilter_query(words.len())` —
-    /// `?1` = project_id, then one term per query word (OR semantics).
+    /// fetch only symbol-tier entities (the non-file tiers — see
+    /// `crate::retrieval::tools_explore_symbols::SYMBOL_TIERS`) whose
+    /// lowercase name contains ANY plain lowercase query word (OR
+    /// semantics).
     ///
-    /// The default scans `list_entities` in Rust so test mocks that don't
-    /// model the SQL projection still compile; `SqliteStorage` overrides it
-    /// with the indexed `LIKE` query (the narrow id/path/name projection —
-    /// no summary/metrics blobs per row).
+    /// `words` must be plain lowercase words — no `%` wildcards; the
+    /// implementation owns LIKE pattern formatting. `SqliteStorage`
+    /// overrides with the indexed `LIKE` query (narrow repo_id/path/name
+    /// projection — no summary/metrics blobs per row); the default filters
+    /// `list_entities` in Rust so test mocks that don't model the SQL
+    /// projection still compile.
     fn symbols_matching_names(
         &self,
-        params: &[String],
+        project_id: &str,
+        words: &[String],
     ) -> crate::Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
-        let project_id = params.first().cloned().unwrap_or_default();
-        let words: Vec<String> = params
-            .iter()
-            .skip(1)
-            .map(|w| w.trim_matches('%').to_string())
-            .collect();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
         if words.is_empty() {
             return Ok(Vec::new());
         }
-        let symbol_tiers = [
-            EntityTier::Function,
-            EntityTier::Module,
-            EntityTier::Subsystem,
-        ];
+        let tiers = crate::retrieval::tools_explore_symbols::SYMBOL_TIERS;
         let mut out: Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate> = Vec::new();
-        for tier in symbol_tiers {
-            for e in self.list_entities(&project_id, Some(tier))? {
+        for tier in tiers {
+            for e in self.list_entities(project_id, Some(tier))? {
                 let name_lc = e.name.to_lowercase();
-                if words
-                    .iter()
-                    .any(|w| !w.is_empty() && name_lc.contains(w.as_str()))
-                {
+                if words.iter().any(|w| !w.is_empty() && name_lc.contains(w)) {
                     out.push(crate::retrieval::tools_explore_symbols::SymbolCandidate {
+                        repo_id: e.repo_id.clone(),
                         path: e.path,
                         name: e.name,
                     });

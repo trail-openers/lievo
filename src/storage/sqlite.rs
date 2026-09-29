@@ -270,20 +270,32 @@ impl Storage for SqliteStorage {
 
     fn symbols_matching_names(
         &self,
-        params: &[String],
+        project_id: &str,
+        words: &[String],
     ) -> Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
-        let word_count = params.len().saturating_sub(1);
-        let Some(sql) = crate::storage::queries::build_symbol_name_prefilter_query(word_count)
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(sql) = crate::storage::queries::build_symbol_name_prefilter_query(words.len())
         else {
             return Ok(Vec::new());
         };
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        // Single construction site for the SQL patterns: project_id, one
+        // `%word%` per query word, then the limit — matching the `?N` shape
+        // the generated query documents.
+        let limit = crate::retrieval::tools_explore_symbols::SYMBOL_PREFILTER_LIMIT as i64;
+        let mut owned: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_id.to_string())];
+        for w in words {
+            owned.push(Box::new(format!("%{}%", w.to_lowercase())));
+        }
+        owned.push(Box::new(limit));
+        let param_refs: Vec<&dyn rusqlite::ToSql> = owned.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             Ok(crate::retrieval::tools_explore_symbols::SymbolCandidate {
-                path: row.get(0)?,
-                name: row.get(1)?,
+                repo_id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
             })
         })?;
         sqlite_ops::collect_rows(rows)

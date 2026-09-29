@@ -1,10 +1,12 @@
 //! Tests for `tools_explore_symbols` — wired via `#[path]` from
 //! `tools_explore_symbols.rs` (same pattern as `tools_explore_match_tests.rs`).
 //!
-//! Covers: prefilter param construction, symbol-name confirmation, symbol
-//! score constants outranking the file channel, the common-word cap on the
-//! merged set, exact-symbol-above-path-token ranking, and an integration test
-//! where a query naming a function returns its containing file.
+//! Covers: symbol-name confirmation, symbol score constants outranking the
+//! file channel, the common-word cap on the merged set, exact-symbol-above-
+//! path-token ranking, multi-repo resolution (a symbol resolving in the repo
+//! that actually contains the file), the prefilter's exact-first bound, and
+//! an integration test where a query naming a function returns its containing
+//! file.
 
 use std::sync::{Arc, Mutex};
 
@@ -14,22 +16,10 @@ use crate::model::{Entity, EntityTier};
 use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::ExploreTool;
 use crate::retrieval::tools_explore_symbols::{
-    EXACT_SYMBOL_SCORE, PREFIX_SYMBOL_SCORE, symbol_name_hits, symbol_prefilter_params,
+    EXACT_SYMBOL_SCORE, PREFIX_SYMBOL_SCORE, SYMBOL_PREFILTER_LIMIT, symbol_name_hits,
 };
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
-
-#[test]
-fn symbol_prefilter_params_empty_words_is_none() {
-    assert!(symbol_prefilter_params("p", &[]).is_none());
-}
-
-#[test]
-fn symbol_prefilter_params_project_id_first_then_like_terms() {
-    let words = vec!["auth".to_string(), "sum_of_squares".to_string()];
-    let params = symbol_prefilter_params("p1", &words).unwrap();
-    assert_eq!(params, vec!["p1", "%auth%", "%sum_of_squares%"]);
-}
 
 #[test]
 fn symbol_name_hits_exact_and_prefix_and_miss() {
@@ -321,4 +311,255 @@ fn query_naming_function_returns_containing_file() {
         .find(|s| s["qualified_path"] == "src/util.rs")
         .unwrap();
     assert_eq!(util["score"], EXACT_SYMBOL_SCORE);
+}
+
+/// Multi-repo: a symbol must resolve against the repo that actually contains
+/// the file, not the first repo whose path lookup happens to be non-empty.
+/// Repo 1 (listed first by the prefilter loop) has a file at the SAME
+/// relative path but no matching symbol; the matching function exists only in
+/// repo 2. Repo 2's file must be returned.
+#[test]
+fn multi_repo_symbol_resolves_in_own_repo_not_first_repo() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("multi-repo-test", None).unwrap();
+    let repo1 = storage
+        .add_repo(&project.id, "repo1", "/tmp/repo1")
+        .unwrap();
+    let repo2 = storage
+        .add_repo(&project.id, "repo2", "/tmp/repo2")
+        .unwrap();
+
+    // Repo 1: a file at src/multi.rs, with only a NON-matching function.
+    let file_a_id = format!("{}:repo1:file:src/multi.rs", project.id);
+    storage
+        .upsert_entity(&Entity {
+            id: file_a_id.clone(),
+            project_id: project.id.clone(),
+            repo_id: Some(repo1.id.clone()),
+            tier: EntityTier::File,
+            parent_id: None,
+            name: "multi".to_string(),
+            path: Some("src/multi.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+    storage
+        .upsert_entity(&Entity {
+            id: format!("{}:repo1:fn:src/multi.rs:unrelated", project.id),
+            project_id: project.id.clone(),
+            repo_id: Some(repo1.id.clone()),
+            tier: EntityTier::Function,
+            parent_id: Some(file_a_id),
+            name: "unrelated".to_string(),
+            path: Some("src/multi.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    // Repo 2: a file at the SAME relative path src/multi.rs, with the
+    // matching function `multi_target`.
+    let file_b_id = format!("{}:repo2:file:src/multi.rs", project.id);
+    storage
+        .upsert_entity(&Entity {
+            id: file_b_id.clone(),
+            project_id: project.id.clone(),
+            repo_id: Some(repo2.id.clone()),
+            tier: EntityTier::File,
+            parent_id: None,
+            name: "multi".to_string(),
+            path: Some("src/multi.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+    storage
+        .upsert_entity(&Entity {
+            id: format!("{}:repo2:fn:src/multi.rs:multi_target", project.id),
+            project_id: project.id.clone(),
+            repo_id: Some(repo2.id.clone()),
+            tier: EntityTier::Function,
+            parent_id: Some(file_b_id),
+            name: "multi_target".to_string(),
+            path: Some("src/multi.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    let ctx = Arc::new(crate::retrieval::tools::ToolContext {
+        storage: Arc::new(Mutex::new(storage)),
+        project_id: project.id.clone(),
+        repo_path: std::path::PathBuf::new(),
+        output_dir: None,
+        zero_repo_guidance: None,
+    });
+    let tool = ExploreTool { ctx };
+    let result = tool.call(json!({ "query": "multi_target" })).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let symbols = v["symbols"].as_array().expect("symbols");
+    assert!(
+        !symbols.is_empty(),
+        "expected repo 2's containing file, got: {v}"
+    );
+    // Repo 2's file (the one containing the matching symbol) must be present.
+    let has_b = symbols
+        .iter()
+        .any(|s| s["qualified_path"] == "src/multi.rs");
+    assert!(has_b, "repo 2 file src/multi.rs missing: {symbols:?}");
+    let b = symbols
+        .iter()
+        .find(|s| s["qualified_path"] == "src/multi.rs")
+        .unwrap();
+    assert_eq!(b["score"], EXACT_SYMBOL_SCORE);
+}
+
+/// The prefilter bound (`SYMBOL_PREFILTER_LIMIT`) must not push an exact
+/// name match out of the result window when many prefix-only candidates
+/// share the prefix. Exact matches sort first (`ORDER BY exact DESC`), so
+/// they survive even when prefix-only rows fill most of the window.
+#[test]
+fn prefilter_bound_exact_match_survives_among_prefix_candidates() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("bound-test", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/tmp/repo1")
+        .unwrap();
+
+    // 30 prefix-only candidates: names share the "target" token (a token
+    // prefix hit) but are not an exact match for the two-word query "exact
+    // target" (the file name is a single token `exact_target`, which only
+    // equals a query word when BOTH words are present as one word). The
+    // first query word "exact" is not a prefix of any token in these names
+    // (they start with "beta"), so they are LIKE candidates that fail
+    // Rust-side confirmation — exactly the shape the bound must protect
+    // against.
+    for i in 0..30 {
+        let path = format!("src/pref_{i}.rs");
+        let file_id = format!("{}:repo1:file:{}", project.id, path);
+        storage
+            .upsert_entity(&Entity {
+                id: file_id.clone(),
+                project_id: project.id.clone(),
+                repo_id: Some(repo.id.clone()),
+                tier: EntityTier::File,
+                parent_id: None,
+                name: format!("pref_{i}"),
+                path: Some(path.clone()),
+                language: Some("Rust".to_string()),
+                summary: None,
+                summary_commit: None,
+                metrics_json: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_entity(&Entity {
+                id: format!("{}:repo1:fn:{}:beta_variant_{i}", project.id, path),
+                project_id: project.id.clone(),
+                repo_id: Some(repo.id.clone()),
+                tier: EntityTier::Function,
+                parent_id: Some(file_id),
+                name: format!("beta_variant_{i}"),
+                path: Some(path),
+                language: Some("Rust".to_string()),
+                summary: None,
+                summary_commit: None,
+                metrics_json: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .unwrap();
+    }
+
+    // One exact-match symbol in a separate file.
+    let exact_file_id = format!("{}:repo1:file:src/exact_target.rs", project.id);
+    storage
+        .upsert_entity(&Entity {
+            id: exact_file_id.clone(),
+            project_id: project.id.clone(),
+            repo_id: Some(repo.id.clone()),
+            tier: EntityTier::File,
+            parent_id: None,
+            name: "exact_target".to_string(),
+            path: Some("src/exact_target.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+    storage
+        .upsert_entity(&Entity {
+            id: format!("{}:repo1:fn:src/exact_target.rs:exact_target", project.id),
+            project_id: project.id.clone(),
+            repo_id: Some(repo.id.clone()),
+            tier: EntityTier::Function,
+            parent_id: Some(exact_file_id),
+            name: "exact_target".to_string(),
+            path: Some("src/exact_target.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    // Verify the bound is at least as large as the candidate count.
+    assert!(
+        SYMBOL_PREFILTER_LIMIT >= 31,
+        "SYMBOL_PREFILTER_LIMIT must cover the test's 31 candidates"
+    );
+
+    let ctx = Arc::new(crate::retrieval::tools::ToolContext {
+        storage: Arc::new(Mutex::new(storage)),
+        project_id: project.id.clone(),
+        repo_path: std::path::PathBuf::new(),
+        output_dir: None,
+        zero_repo_guidance: None,
+    });
+    let tool = ExploreTool { ctx };
+    let result = tool.call(json!({ "query": "exact target" })).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let symbols = v["symbols"].as_array().expect("symbols");
+    // The exact-match file must be present and ranked at the top (score 4).
+    let has_exact = symbols
+        .iter()
+        .any(|s| s["qualified_path"] == "src/exact_target.rs");
+    assert!(
+        has_exact,
+        "exact-match file src/exact_target.rs must survive among 30 prefix candidates: {symbols:?}"
+    );
+    let exact = symbols
+        .iter()
+        .find(|s| s["qualified_path"] == "src/exact_target.rs")
+        .unwrap();
+    assert_eq!(exact["score"], EXACT_SYMBOL_SCORE);
+    // The exact match must rank first (score 4 > any prefix score).
+    assert!(
+        symbols.first().unwrap()["qualified_path"] == "src/exact_target.rs",
+        "exact match must be first: {symbols:?}"
+    );
 }

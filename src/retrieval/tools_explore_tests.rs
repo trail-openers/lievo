@@ -136,10 +136,10 @@ fn line_numbered_source_handles_multibyte_chars() {
 
 #[test]
 fn continuation_pointer_includes_counts_and_next() {
-    let ptr = continuation_pointer(8, 42, "search_entities(query='x', limit=15)");
+    let ptr = continuation_pointer(8, 42, "lievo_explore(query='x', max_files=15)");
     assert!(ptr.contains("returned: 8"));
     assert!(ptr.contains("total: 42"));
-    assert!(ptr.contains("next: \"search_entities(query='x', limit=15)\""));
+    assert!(ptr.contains("next: \"lievo_explore(query='x', max_files=15)\""));
 }
 
 #[test]

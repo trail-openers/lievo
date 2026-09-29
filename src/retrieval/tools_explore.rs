@@ -450,9 +450,11 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
 
         if returned < total {
             // Breadth was truncated: not-shown count + completeness line so an
-            // agent can tell truncated breadth from exhausted results.
+            // agent can tell truncated breadth from exhausted results. The
+            // continuation names lievo_explore itself — `search_entities` is
+            // hidden behind LIEVO_MCP_TOOLS by default.
             let next_tool = format!(
-                "search_entities(query='{}', limit={})",
+                "lievo_explore(query='{}', max_files={})",
                 q,
                 total.min(MAX_MAX_FILES)
             );
