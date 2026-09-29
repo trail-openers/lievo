@@ -295,8 +295,6 @@ impl Storage for SqliteStorage {
         })?;
         sqlite_ops::collect_rows(rows)
     }
-
-
     fn search_entities_by_name(
         &self,
         project_id: &str,
