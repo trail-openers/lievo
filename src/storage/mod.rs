@@ -147,11 +147,29 @@ pub trait Storage {
     ) -> crate::Result<Vec<Entity>>;
     fn entities_by_parent(&self, parent_id: &str) -> crate::Result<Vec<Entity>>;
     fn entity_by_path(&self, repo_id: &str, path: &str) -> crate::Result<Option<Entity>>;
+    /// Batch lookup of File-tier entity ids by path for one repository.
+    ///
+    /// The default scans `entities_by_repo` in Rust (File tier only, exact
+    /// path match) so test storages that model the entity table compile
+    /// without a dedicated implementation; `SqliteStorage` overrides it with
+    /// an indexed `WHERE path IN (...)` query (chunked to respect SQLite's
+    /// bind-variable limit).
     fn entity_ids_for_paths(
         &self,
         repo_id: &str,
         paths: &[&str],
-    ) -> crate::Result<std::collections::HashMap<String, String>>;
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        let wanted: std::collections::HashSet<&str> = paths.iter().copied().collect();
+        let mut map = std::collections::HashMap::new();
+        for e in self.entities_by_repo(repo_id, Some(EntityTier::File))? {
+            if let Some(p) = e.path.as_deref()
+                && wanted.contains(p)
+            {
+                map.insert(p.to_string(), e.id);
+            }
+        }
+        Ok(map)
+    }
     fn entity_by_path_projectwide(
         &self,
         project_id: &str,
