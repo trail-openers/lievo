@@ -98,7 +98,6 @@ pub trait Storage {
         project_id: &str,
         words: &[String],
     ) -> crate::Result<Vec<crate::retrieval::tools_explore_symbols::SymbolCandidate>> {
-        let words: Vec<&str> = words.iter().map(String::as_str).collect();
         if words.is_empty() {
             return Ok(Vec::new());
         }
@@ -107,7 +106,10 @@ pub trait Storage {
         for tier in tiers {
             for e in self.list_entities(project_id, Some(tier))? {
                 let name_lc = e.name.to_lowercase();
-                if words.iter().any(|w| !w.is_empty() && name_lc.contains(w)) {
+                if words
+                    .iter()
+                    .any(|w| !w.is_empty() && name_lc.contains(w.as_str()))
+                {
                     out.push(crate::retrieval::tools_explore_symbols::SymbolCandidate {
                         repo_id: e.repo_id.clone(),
                         path: e.path,

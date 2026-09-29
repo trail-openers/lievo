@@ -167,10 +167,19 @@ pub(crate) fn matching_entities<S: Storage>(
     // at the same relative path — confirmed symbols are grouped by repo_id
     // and `entity_ids_for_paths` is called once per repo with that repo's
     // own paths.
-    let confirmed: Vec<SymbolCandidate> = prefilter_symbols(storage, &ctx.project_id, query)
-        .into_iter()
-        .filter(|c| {
-            c.path.is_some() && c.repo_id.is_some() && symbol_name_hits(&c.name, &words).is_some()
+    // Confirmation runs ONCE per candidate here; the `(exact, prefix)` hit
+    // flag rides along so the resolution loop below does not recompute it.
+    // A candidate whose repo_id is None cannot be resolved (per-repo lookup
+    // needs a repo) and is excluded here.
+    // `prefilter` lives for the whole function, so the `&SymbolCandidate`
+    // refs below point into it (no per-candidate clones).
+    let prefilter = prefilter_symbols(storage, &ctx.project_id, query);
+    let confirmed: Vec<(&SymbolCandidate, bool)> = prefilter
+        .iter()
+        .filter(|c| c.path.is_some() && c.repo_id.is_some())
+        .filter_map(|c| {
+            let c_ref = c as &SymbolCandidate;
+            symbol_name_hits(&c.name, &words).map(|(exact, _)| (c_ref, exact))
         })
         .collect();
 
@@ -181,15 +190,18 @@ pub(crate) fn matching_entities<S: Storage>(
         // Group confirmed symbols by their own repo_id; distinct paths per
         // repo (sorted for a stable lookup).
         let mut paths_by_repo: HashMap<String, Vec<String>> = HashMap::new();
-        let mut symbols_by_repo: HashMap<String, Vec<&SymbolCandidate>> = HashMap::new();
-        for c in &confirmed {
+        let mut symbols_by_repo: HashMap<String, Vec<(&SymbolCandidate, bool)>> = HashMap::new();
+        for (c, exact) in &confirmed {
             let Some(repo_id) = c.repo_id.clone() else {
                 continue;
             };
             let Some(path) = c.path.clone() else {
                 continue;
             };
-            symbols_by_repo.entry(repo_id.clone()).or_default().push(c);
+            symbols_by_repo
+                .entry(repo_id.clone())
+                .or_default()
+                .push((c, *exact));
             paths_by_repo.entry(repo_id).or_default().push(path);
         }
         for paths in paths_by_repo.values_mut() {
@@ -210,17 +222,14 @@ pub(crate) fn matching_entities<S: Storage>(
             let Some(symbols) = symbols_by_repo.get(repo_id) else {
                 continue;
             };
-            for c in symbols {
+            for (c, exact) in symbols {
                 let Some(path) = c.path.as_deref() else {
                     continue;
                 };
                 let Some(file_id) = id_by_path.get(path) else {
                     continue;
                 };
-                let Some(hits) = symbol_name_hits(&c.name, &words) else {
-                    continue;
-                };
-                let score = if hits.0 {
+                let score = if *exact {
                     EXACT_SYMBOL_SCORE
                 } else {
                     PREFIX_SYMBOL_SCORE
@@ -254,7 +263,7 @@ pub(crate) fn matching_entities<S: Storage>(
         let Some(entity) = storage.get_entity(file_id).unwrap_or_else(|err| {
             // Storage degraded for one file: log, keep the rest, never
             // surface an error out of query mode.
-            tracing::debug!("lievo_explore skipping containing file {file_id}: {err}");
+            tracing::warn!("lievo_explore skipping containing file {file_id}: {err}");
             None
         }) else {
             // Ok(None): the file entity is gone (stale prefilter row) — skip

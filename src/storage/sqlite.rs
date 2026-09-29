@@ -266,6 +266,10 @@ impl Storage for SqliteStorage {
         sqlite_ops::list_entities(&self.conn, project_id, tier)
     }
 
+    /// The generated SQL (see `queries::build_symbol_name_prefilter_query`) sorts
+    /// exact matches first via `ORDER BY (LOWER(name) = ?N) DESC`, which REUSES
+    /// the same `?N` word parameters as the `LIKE` clauses (SQLite re-evaluates
+    /// bound params in ORDER BY) so exact hits survive the LIMIT window.
     fn symbols_matching_names(
         &self,
         project_id: &str,

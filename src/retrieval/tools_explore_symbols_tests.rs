@@ -38,6 +38,74 @@ fn symbol_name_hits_exact_and_prefix_and_miss() {
     assert_eq!(symbol_name_hits("validity", &words), None);
 }
 
+/// A symbol candidate without a repo_id cannot be resolved against a repo and
+/// must be excluded from the result even when its name matches exactly.
+#[test]
+fn symbol_candidate_without_repo_id_is_not_resolved() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("no-repo-test", None).unwrap();
+
+    // A file entity with repo_id None. Its name and path share no token with
+    // the query word ("widgets" is not a token prefix of "orphan"), so the
+    // file channel cannot admit it — only the symbol channel could.
+    let file_id = format!("{pid}:file:src/widgets.rs", pid = project.id);
+    storage
+        .upsert_entity(&Entity {
+            id: file_id.clone(),
+            project_id: project.id.clone(),
+            repo_id: None,
+            tier: EntityTier::File,
+            parent_id: None,
+            name: "widgets".to_string(),
+            path: Some("src/widgets.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+    storage
+        .upsert_entity(&Entity {
+            id: format!("{pid}:fn:src/widgets.rs:orphan_fn", pid = project.id),
+            project_id: project.id.clone(),
+            repo_id: None,
+            tier: EntityTier::Function,
+            parent_id: Some(file_id.clone()),
+            name: "orphan_fn".to_string(),
+            path: Some("src/widgets.rs".to_string()),
+            language: Some("Rust".to_string()),
+            summary: None,
+            summary_commit: None,
+            metrics_json: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    let ctx = Arc::new(crate::retrieval::tools::ToolContext {
+        storage: Arc::new(Mutex::new(storage)),
+        project_id: project.id.clone(),
+        repo_path: std::path::PathBuf::new(),
+        output_dir: None,
+        zero_repo_guidance: None,
+    });
+    let tool = ExploreTool { ctx };
+    let result = tool.call(json!({ "query": "orphan_fn" })).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let symbols = v["symbols"].as_array().expect("symbols");
+    // The file channel cannot admit src/widgets.rs (no token hit), so the
+    // ONLY channel that could return it is the symbol channel — which must
+    // exclude the repo_id-None candidate.
+    assert!(
+        symbols
+            .iter()
+            .all(|s| s["qualified_path"] != "src/widgets.rs"),
+        "symbol candidate with repo_id None must not be resolved: {symbols:?}"
+    );
+}
+
 #[test]
 fn exact_symbol_score_outranks_file_name_and_path() {
     use crate::retrieval::explore_ranking::score_file_entity;
@@ -131,15 +199,21 @@ fn common_word_cap_applies_to_merged_set() {
         "common word 'new' returned {len} files, expected <= 8 (max_files cap); got {symbols:?}",
         len = symbols.len()
     );
-    // Continuation must be present when total > returned.
-    let has_continuation = v.get("continuation").is_some();
-    let total = v
-        .get("completeness")
-        .and_then(|c| c.as_str())
-        .map(|s| !s.is_empty());
-    assert!(
-        has_continuation || total.is_some(),
-        "expected continuation pointer when matches exceed max_files; got: {v}"
+    // The actual continuation contract: when total > returned, the response
+    // carries a `continuation` string of the form
+    // "returned: R, total: T, next: \"lievo_explore(...)\"" plus not_shown /
+    // completeness disclosures.
+    let cont = v["continuation"]
+        .as_str()
+        .expect("continuation pointer must be present when matches exceed max_files");
+    assert_eq!(
+        cont, "returned: 8, total: 20, next: \"lievo_explore(query='new', max_files=20)\"",
+        "continuation must state returned/total and the next call; got: {cont}"
+    );
+    assert_eq!(v["not_shown"], 12, "12 files truncated past max_files=8");
+    assert_eq!(
+        v["completeness"], "showing 8 of 20 matching files",
+        "completeness line must name the truncated breadth"
     );
 }
 

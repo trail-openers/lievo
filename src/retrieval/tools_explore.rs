@@ -51,7 +51,7 @@ use crate::retrieval::tools_explore_scope;
 /// length >= 2. Common English stop-words carried by natural-language queries
 /// (issue #837) are dropped here: an all-stop-word query therefore returns an
 /// empty word set, and the existing empty-words early return in
-/// `matching_file_entities` degrades gracefully instead of matching everything.
+/// `matching_entities` degrades gracefully instead of matching everything.
 pub(crate) fn query_words(query: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     query
@@ -63,27 +63,6 @@ pub(crate) fn query_words(query: &str) -> Vec<String> {
         .take(10)
         .map(String::from)
         .collect()
-}
-
-/// Match file-tier entities against the query words. Admission is
-/// token-boundary aware (issue #837): a query word admits a file only when it
-/// is a substring of a single token of the file name or path (tokens split on
-/// `/ . _ -` and camelCase boundaries) — not of the whole lowercased string,
-/// so "files" no longer admits "SettingsPanel" and "id" no longer admits
-/// "validity". Case-insensitivity is preserved; substring matching WITHIN a
-/// token is intentional (stem matching, e.g. "auth" -> "authentication").
-///
-/// Symbol-tier entities are additionally admitted when their NAME matches a
-/// query word with the same token matcher (`tools_explore_symbols`); their
-/// containing files join the result set, de-duplicated against direct file
-/// matches, and a confirmed symbol raises its file's score (exact symbol-name
-/// hit > symbol prefix > file name hit > path token).
-pub(crate) fn matching_file_entities<S: Storage>(
-    storage: &S,
-    ctx: &ToolContext<S>,
-    query: &str,
-) -> (Vec<Entity>, std::collections::HashMap<String, i32>) {
-    matching_entities(storage, ctx, query)
 }
 
 // Storage-side helpers
@@ -392,7 +371,7 @@ impl<S: Storage + Send> Tool for ExploreTool<S> {
         }
 
         let guard = lock_storage!(self.ctx.storage);
-        let (matched, symbol_score) = matching_file_entities(&*guard, &self.ctx, q);
+        let (matched, symbol_score) = matching_entities(&*guard, &self.ctx, q);
         let total = matched.len();
         drop(guard);
 
