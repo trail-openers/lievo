@@ -8,7 +8,7 @@ Before your first pull request is merged, you must sign the [Contributor License
 
 **Why it exists:** Lievo is licensed AGPL-3.0. To stay able to offer additional terms — for example, a commercial licence for enterprises that cannot or do not want to comply with the AGPL — the maintainers need a grant that covers every contribution, including the right to relicense. The CLA preserves your copyright; it grants Janni Turunen and Trail Openers Oy a perpetual, irrevocable licence to use, modify, and relicense your contribution under any terms (including commercial ones), plus a patent grant. See [CLA.md](CLA.md) for the full text.
 
-Signing is automated: when you open a pull request, the CLA Assistant bot checks your signature and tells you how to sign (either via the GitHub UI flow or by commenting on the PR). Signed contributions are recorded in the repository.
+Signing is automated: when you open a pull request, the CLA Assistant bot checks your signature and tells you how to sign (either via the GitHub UI flow or by commenting on the PR). Your signature record — your GitHub username and the time you signed — is kept in a private repository for data-protection reasons.
 
 > Note: the CLA text is subject to legal review before the first outside contribution is merged.
 
