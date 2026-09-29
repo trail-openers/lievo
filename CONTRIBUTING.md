@@ -114,6 +114,15 @@ cargo about generate THIRD_PARTY_NOTICES.md.hbs -o THIRD_PARTY_NOTICES.md
 
 `cargo-about` reads licence metadata from crates.io; where a crate's metadata is missing but the crate ships a licence file (e.g. `model2vec` is MIT), the notices file carries a hand-recorded entry — keep those entries current when the dependency set changes. The notices file must be committed and shipped in the release archives.
 
+The file also carries two hand-maintained sections that `cargo-about` does not generate:
+
+- **option-ext source pointer** — identifies the MPL-2.0 covered source (crate name, version, crates.io page, repository URL) so the file-level copyleft obligation is locatable.
+- **Bundled native components** — the licences of C/C++ sources that `-sys` crates bundle under their own (non-crate) licence: libgit2 (GPL-2.0 with linking exception, via `libgit2-sys`), Oniguruma (2-clause BSD-style, via `onig_sys`), zlib (via `libz-sys`), SQLite (public domain, via `libsqlite3-sys`), and one-line Apache-2.0 notes for `usearch` and `numkong` (no NOTICE file ships). Each entry names the `-sys` crate and version that ships the bundled code.
+
+**When a `-sys` crate is upgraded** (libgit2-sys, onig_sys, libz-sys, libsqlite3-sys, or any new one), re-verify the bundled-native section against the new registry source (`~/.cargo/registry/src/<registry>/<crate>-<version>/...`): the bundled code's licence may have changed, and the `-sys` crate's own crates.io metadata (which `cargo-about` reads) does not reflect the bundled code's licence. Also confirm the OpenSSL-headers statement in that section still holds for the new libgit2-sys version (it is only compiled when `git2`'s `https` feature is enabled on Linux, which lievo does not enable).
+
+The `## lievo vX.Y.Z` heading in the file carries the current version and is bumped in the same PR as the `Cargo.toml` version bump (see the release steps above).
+
 ### Dry run (pre-release)
 
 1. Push the pre-release tag (after the version bump above merged): `git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1`
