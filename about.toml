@@ -29,10 +29,11 @@ accepted = [
     "Zlib",
 ]
 
-# Only include crates that are compiled into one of our five release targets.
-# Crates gated behind `#[cfg(target_os = "...")]` for targets we don't ship
-# (wasi, wasm, redox, haiku, i686 windows, gnu-flavoured windows) are excluded.
-# See dist-workspace.toml for the matching `targets` list.
+# Pins the notice scope to exactly the five triples we ship: cargo-about keeps
+# a crate only if it is a dependency for at least one of them (so crates for
+# wasi, wasm, redox, haiku, android, i686 or gnu-flavoured windows drop out).
+# Keep this list identical to dist-workspace.toml's `targets`; when a target
+# is added or removed, regenerate and review the diff of THIRD_PARTY_NOTICES.md.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",

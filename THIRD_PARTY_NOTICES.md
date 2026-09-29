@@ -490,10 +490,11 @@ Rust crate `option-ext` v0.2.0 published on crates.io:
 - Crate page: https://crates.io/crates/option-ext
 - Repository: https://github.com/soc/option-ext
 
-MPL-2.0 is file-level copyleft: the obligation is to provide the source of
-the covered files (the `option-ext` crate's `src/` directory) to recipients
-of the binary. The crate's source is available at the repository URL above
-and in the cargo registry cache for anyone building lievo from source.
+Notice under MPL-2.0 §3.2: the lievo binary contains code from
+`option-ext` v0.2.0, which is governed by the Mozilla Public License 2.0
+(https://mozilla.org/MPL/2.0/). The Source Code Form of that code is
+available at the crate page and repository above. MPL-2.0 is file-level
+copyleft: it applies to `option-ext`'s own files, not to the rest of lievo.
 
 ## Bundled native components
 
@@ -1995,17 +1996,21 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 libgit2's `build.rs` compiles several of the bundled sub-components into
 every libgit2-sys build, so the following are compiled into lievo's release
 binaries: PCRE2 (regex backend, `GIT_REGEX_BUILTIN` and the `PCRE2_*` settings
-in `libgit2-sys/build.rs`, lines ~168–185), llhttp (HTTP parser,
+in `libgit2-sys/build.rs`; PCRE2's JIT is not built and its `sljit` sources
+are not part of the vendored tree, so sljit's separate licence does not
+apply), llhttp (HTTP parser,
 `GIT_HTTPPARSER_BUILTIN`), the bundled zlib, xdiff, and the CollisionDetect
 SHA1 implementation (`GIT_SHA1_COLLISIONDETECT`). The bundled ntlmclient
 sources are used only by the HTTP transport and only take effect when the
-`https` feature is enabled; wildmatch (BSD) and RSA's MD4 (BSD) code
-shipped by libgit2 is likewise compiled by libgit2's build, while the
-winhttp sources under `libgit2/deps/` are compiled only for Windows targets.
+`https` feature is enabled. wildmatch (BSD, `src/util/wildmatch.c`) is
+compiled; the RSA MD4 (BSD) code is not, because it is used only by
+ntlmclient. The winhttp sources under `libgit2/deps/` are compiled only for
+Windows targets. The licence texts for these components are carried in
+the libgit2 COPYING text above.
 The authoritative licence text for each is in `libgit2/deps/` (and
 `libgit2/src/util/`) inside the libgit2-sys crate.
 
-libgit2's OpenSSL-licensed headers (in `libgit2/include/ut_hmac/`) are used
+libgit2's OpenSSL-licensed header code (`src/libgit2/streams/openssl_dynamic.h`) is used
 only by the OpenSSL backend, which libgit2's build activates only when the
 `https` feature is enabled (`GIT_OPENSSL`). lievo depends on `git2 = "0.21"`
 with default features only (see `Cargo.toml`), which does not enable `https`;
@@ -2065,8 +2070,9 @@ sources carry the zlib licence shown here.)
 
 ### SQLite (via `libsqlite3-sys` v0.38.2)
 
-SQLite is in the public domain. The author disclaims copyright to the
-source code; in place of a legal notice, the amalgamation ships a blessing:
+SQLite is dedicated to the public domain: its authors disclaim copyright,
+so no licence terms attach to it. The blessing quoted below is a courtesy
+statement that ships in place of a legal notice, not a licence:
 
 > The author disclaims copyright to this source code. In place of a legal
 > notice, here is a blessing:
