@@ -193,7 +193,7 @@ Available MCP tools:
 
 ## CLI reference
 
-See [CLI Reference](docs/cli-reference.md) for the full command list, and [CLI Output Contracts](docs/cli-output-contracts.md) for format details.
+See [CLI Reference](docs/cli-reference.md) for the full command list. `lievo refresh [<project>]`, `lievo mcp [<project>]`, and `lievo doctor [PATH]` are documented there.
 
 ## License
 
