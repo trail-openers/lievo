@@ -1,5 +1,15 @@
 # CLI Reference
 
+## Top-level commands
+
+| Command | Purpose |
+| --- | --- |
+| `lievo refresh [<project>]` | Run semantic code analysis and keep entity graph current |
+| `lievo mcp [<project>]` | Start the MCP server over stdio for agent integration |
+| `lievo doctor [PATH]` | One-screen diagnostic: is lievo registered, indexed, and current here? |
+
+`lievo summarize [<project>]` re-summarizes entities with cached descriptions (alias: `sum`). `lievo query` subcommands are listed below.
+
 ## Admin workflows
 
 | Command | Purpose |
