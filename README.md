@@ -74,8 +74,7 @@ One query names the modules, subsystems, and functions affected by a change to a
 ## Quickstart
 
 ```bash
-# 1. Install (macOS/Linux; no Rust toolchain required)
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
+# 1. Install (macOS/Linux) — see the Install section below for the one-liner
 
 # 2. Register lievo with your agent — e.g. Claude Code
 claude mcp add lievo --scope user -- lievo mcp
@@ -86,16 +85,16 @@ lievo refresh
 lievo query entities --project <name> "storage"
 ```
 
-`lievo mcp` auto-registers the repo it is launched in and indexes it in the background. [Quickstart](docs/quickstart.md) covers registration for every client (Claude Code, Codex CLI, VS Code, Cursor, pi), first use, and troubleshooting with `lievo doctor`.
+`lievo mcp` auto-registers the repo it is launched in and indexes it in the background.
 
 ## Why Lievo?
 
 Built-in file search is fast and text-based, but it has no model of how the code is structured. Lievo supplies that model, and each of the four capabilities below ships in the current build:
 
-- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns: `query subsystems`, `query modules`, `query entities --semantic`, and the `lievo_explore` symbol map all run against the structural index (`src/query/entity_queries.rs`, `src/retrieval/`)
-- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (`src/storage/sqlite_rel_ops.rs`, `src/query/dependency.rs`)
-- **Pre-computed insights** — circular dependencies, complexity and coupling hotspots, god modules, and coverage gaps are detected on every analysis run (src/analysis/insights_circular.rs, insights_god.rs, src/analysis/metrics.rs)
-- **Incremental and persistent** — the index lives in SQLite, updates only when the code changes, and survives across sessions and agent restarts (src/storage/, src/analysis/incremental.rs)
+- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns: `query subsystems`, `query modules`, `query entities --semantic`, and the `lievo_explore` symbol map all run against the structural index (`src/query/`, `src/retrieval/`)
+- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (`src/storage/`, `src/query/`)
+- **Pre-computed insights** — circular dependencies, complexity and coupling hotspots, god modules, and coverage gaps are detected on every analysis run (`src/analysis/`)
+- **Incremental and persistent** — the index lives in SQLite, updates only when the code changes, and survives across sessions and agent restarts (`src/storage/`, `src/analysis/incremental.rs`)
 
 ## Evidence
 
@@ -138,14 +137,6 @@ The shipping configuration never loses significantly on any suite: change-impact
 
 **MCP surface.** Only `lievo_explore` is listed to your agent by default; see [MCP integration](#mcp-integration) for the opt-in list.
 
-## Key features
-
-- `lievo refresh [<project>]` — run semantic code analysis and keep entity graph current
-- `lievo query` — inspect entities, relationships, subsystems, conventions, metrics, dependencies, and files
-- `lievo summarize [<project>]` — re-summarize entities with cached descriptions (alias: `sum`)
-- `lievo mcp [<project>]` — start the MCP server over stdio for agent integration
-- `lievo doctor [PATH]` — one-screen diagnostic: is lievo registered, indexed, and current here?
-
 ## Install
 
 Installation requires network access (GitHub and crates.io; the embedding model is fetched from Hugging Face on first use).
@@ -168,7 +159,7 @@ Falling back to Rust, or building from source:
 cargo install --git https://github.com/trail-openers/lievo.git
 ```
 
-See the [Quickstart](docs/quickstart.md) above for the full client list, first use, and troubleshooting.
+Beyond the commands shown above, lievo also offers `lievo summarize` (re-summarize entities) and `lievo doctor` (one-screen diagnostic). See the [CLI Reference](docs/cli-reference.md) for the full command list.
 
 ## MCP integration
 
@@ -184,7 +175,7 @@ Available MCP tools:
 
 `lievo_explore` is the only tool listed to the agent by default; every other tool below is hidden unless you set `LIEVO_MCP_TOOLS` (comma-separated tool names, e.g. `export LIEVO_MCP_TOOLS=get_entity,read_file`) before the server starts — see the [quickstart](docs/quickstart.md).
 
-- `lievo_explore` — the default tool. Tier 1 (default) symbol map, Tier 2 (`include_source=true`) verbatim source, `scope='<dir>'` file listing, `bundle='<dir>'` packed subsystem source — one call, no per-file re-reads.
+- `lievo_explore` — the default tool. Tier 1 (default) symbol map, Tier 2 (`include_source=true`) verbatim source, `scope="<dir>"` file listing, `bundle="<dir>"` packed subsystem source — one call, no per-file re-reads.
 - `search_entities` — search by name/keyword; set `semantic=true` for vector search
 - `get_entity` — full entity details by ID
 - `list_relationships` — dependencies and dependents for an entity
@@ -202,7 +193,7 @@ Available MCP tools:
 
 ## CLI reference
 
-See [CLI Reference](docs/cli-reference.md) for the full admin and query subcommand tables, and [CLI Output Contracts](docs/cli-output-contracts.md) for format details.
+See [CLI Reference](docs/cli-reference.md) for the full command list.
 
 ## License
 
