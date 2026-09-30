@@ -32,7 +32,7 @@ Query commands support human and JSON (`--format json`) output. See [CLI Output 
 
 | Command | Purpose |
 | --- | --- |
-| `lievo query entities --project <name> <query>` | Search entities by keyword |
+| `lievo query entities [--semantic] --project <name> <query>` | Search entities by keyword, or by embedding similarity with `--semantic` |
 | `lievo query entity --project <name> <entity-id>` | Show full entity details |
 | `lievo query relationships --project <name> <entity-id>` | Show dependencies and dependents |
 | `lievo query children --project <name> <entity-id>` | List child entities for a module or subsystem |

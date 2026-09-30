@@ -9,7 +9,7 @@ An index and a grep are complements, not substitutes. Adding lievo to an agent t
 
 ## What lievo returns
 
-The examples below were produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have (project name = directory name by default) and run the same commands with your project's name to reproduce them.
+The examples below were produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo mcp` and `lievo admin add-repo` both default the project name to the checkout directory name — and run the same commands with your project's name to reproduce them. The entity IDs in the output embed the project id and the checkout directory name (`lievo-public` here); a reader's IDs will differ in those segments while the structure of the output is the same.
 
 ```bash
 lievo query entities --project lievo "storage"
@@ -74,7 +74,8 @@ One query names the modules, subsystems, and functions affected by a change to a
 ## Quickstart
 
 ```bash
-# 1. Install (macOS/Linux) — see the Install section below for the one-liner
+# 1. Install (macOS/Linux; Windows and cargo install: see Install below)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
 
 # 2. Register lievo with your agent — e.g. Claude Code
 claude mcp add lievo --scope user -- lievo mcp
