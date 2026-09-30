@@ -9,7 +9,7 @@ An index and a grep are complements, not substitutes. Adding lievo to an agent t
 
 ## What lievo returns
 
-The examples below were produced by running lievo 0.1.0 (commit `d5c45c6`) against the lievo repository itself, registered as project `lievo`, on 2026-09-30. Index any repo you have (project name = directory name by default) and run the same commands with your project's name to reproduce them.
+The examples below were produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have (project name = directory name by default) and run the same commands with your project's name to reproduce them.
 
 ```bash
 lievo query entities --project lievo "storage"
@@ -79,6 +79,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/rel
 
 # 2. Register lievo with your agent — e.g. Claude Code
 claude mcp add lievo --scope user -- lievo mcp
+# (`--scope` is a Claude Code flag, not a lievo flag)
 
 # 3. Index a repo and query it (from inside the repo)
 lievo refresh
@@ -91,8 +92,8 @@ lievo query entities --project <name> "storage"
 
 Built-in file search is fast and text-based, but it has no model of how the code is structured. Lievo supplies that model, and each of the four capabilities below ships in the current build:
 
-- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns: `query subsystems`, `query modules`, `query entities --semantic`, and the `lievo_explore` symbol map all run against the structural index (src/query/entity_queries.rs, src/retrieval/)
-- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (src/storage/sqlite_rel_ops.rs, src/query/dependency.rs)
+- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns: `query subsystems`, `query modules`, `query entities --semantic`, and the `lievo_explore` symbol map all run against the structural index (`src/query/entity_queries.rs`, `src/retrieval/`)
+- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (`src/storage/sqlite_rel_ops.rs`, `src/query/dependency.rs`)
 - **Pre-computed insights** — circular dependencies, complexity and coupling hotspots, god modules, and coverage gaps are detected on every analysis run (src/analysis/insights_circular.rs, insights_god.rs, src/analysis/metrics.rs)
 - **Incremental and persistent** — the index lives in SQLite, updates only when the code changes, and survives across sessions and agent restarts (src/storage/, src/analysis/incremental.rs)
 
@@ -167,7 +168,7 @@ Falling back to Rust, or building from source:
 cargo install --git https://github.com/trail-openers/lievo.git
 ```
 
-**[Quickstart](docs/quickstart.md)** covers install without Rust, registering lievo once with your agent (Claude Code, Codex CLI, VS Code, Cursor, pi), first use, and troubleshooting with `lievo doctor`.
+See the [Quickstart](docs/quickstart.md) above for the full client list, first use, and troubleshooting.
 
 ## MCP integration
 
