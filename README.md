@@ -1,8 +1,8 @@
 # lievo — code analysis and knowledge platform
 
-An index and a grep are complements, not substitutes. Lievo is a persistent, semantic index of your codebase — structure, relationships, and subsystems in SQLite — exposed through a CLI and an MCP server. It works alongside your agent's built-in file search and read tools; it does not replace them. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
+An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested. Lievo is a persistent, semantic index of your codebase — structure, relationships, and subsystems in SQLite — exposed through a CLI and an MCP server. It works alongside your agent's built-in file search and read tools; it does not replace them. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
 
-[![CI](https://github.com/trail-openers/lievo/workflows/CI/badge.svg)](https://github.com/trail-openers/lievo/actions/workflows/ci.yml)
+[![CI](https://github.com/trail-openers/lievo/actions/workflows/ci.yml/badge.svg)](https://github.com/trail-openers/lievo/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 ## Why Lievo?
@@ -42,9 +42,9 @@ Across 18 multi-turn sessions the shipping configuration made 114 `lievo_explore
 
 **Summarization (optional).** Backends: `apfel`, `llama-server`, and any OpenAI-compatible endpoint (generic backend; token via `LIEVO_SUMMARIZER_TOKEN`). During a manual `lievo refresh`, summarization turns on automatically when an `apfel` binary is on PATH, or when a remote endpoint is configured — and can be switched off in config. The automatic index started by `lievo mcp` never summarizes. Setup: [Self-hosted Summarization](docs/self-hosted-summarization.md).
 
-**Semantic search (on-device).** `lievo_explore`-adjacent keyword search plus vector search over the index, built on model2vec + usearch, runs entirely on-device. The embedding model (`minishlab/potion-code-16M-v2`, ~16 MB) is downloaded once from Hugging Face on the first manual `lievo refresh`. Storage is local SQLite. During indexing and querying, data leaves the machine only for that one model download and a configured remote summarizer.
+**Semantic search (on-device).** Keyword search plus vector search over the index, built on model2vec + usearch, runs entirely on-device. The embedding model (`minishlab/potion-code-16M-v2`, ~16 MB) is downloaded once from Hugging Face on the first manual `lievo refresh`. Storage is local SQLite. During indexing and querying, data leaves the machine only for that one model download and a configured remote summarizer.
 
-**MCP surface.** One tool is listed to your agent by default: `lievo_explore`. All other tools are hidden unless you opt in via `LIEVO_MCP_TOOLS` (see below).
+**MCP surface.** Only `lievo_explore` is listed to your agent by default; see [MCP integration](#mcp-integration) for the opt-in list.
 
 ## Key features
 
