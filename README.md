@@ -2,7 +2,7 @@
 
 Lievo is a persistent, semantic index of your codebase — structure, relationships, and subsystems in SQLite — exposed through a CLI and an MCP server. It works alongside your agent's built-in file search and read tools; it does not replace them.
 
-An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
+An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
 
 [![CI](https://github.com/trail-openers/lievo/actions/workflows/ci.yml/badge.svg)](https://github.com/trail-openers/lievo/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
@@ -34,7 +34,7 @@ The lievo_only row is a replacement configuration, not a recommendation: it wins
 
 Across 18 multi-turn sessions the shipping configuration made 114 `lievo_explore` calls plus 477 built-in calls (Read 177, Grep 126, Bash 110, Glob 64), and its lievo call mix is near-identical to the lievo_only arm's: lievo is added to the built-ins rather than substituted for them.
 
-The shipping configuration shows no statistically significant loss on any suite.
+The shipping configuration never loses significantly on any suite: change-impact F1 0.926 vs 0.951 (−0.025 [−0.054, +0.002], tied) and change-impact tokens −3,161 [−51,401, +47,631] (tied); bug localization F1 0.331 vs 0.371 (−0.041 [−0.193, +0.110], tied — a replicated null across three runs, n=26, n=39, n=39) and tokens +136,872 [−325,880, +612,437] (tied); multi-turn resident context −92,667 [−205,049, +20,833] (tied).
 
 **Caveats, stated next to the numbers:**
 
