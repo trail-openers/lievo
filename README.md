@@ -1,24 +1,105 @@
-# lievo — code analysis and knowledge platform
+# lievo
 
-Lievo is a persistent, semantic index of your codebase — structure, relationships, and subsystems in SQLite — exposed through a CLI and an MCP server. It works alongside your agent's built-in file search and read tools; it does not replace them.
+Lievo is a structural index of your codebase, built for people running coding agents on a large codebase. It maps the subsystems, modules, and functions in your repo and the relationships between them — imports, calls, contains — so an agent can answer structural questions in one query instead of cross-referencing dozens of files by hand. It works alongside your agent's built-in file search and read tools; it does not replace them.
 
 An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
 
 [![CI](https://github.com/trail-openers/lievo/actions/workflows/ci.yml/badge.svg)](https://github.com/trail-openers/lievo/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
+## What lievo returns
+
+The examples below were produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo mcp` and `lievo admin add-repo` both default the project name to the checkout directory name — and run the same commands with your project's name to reproduce them. The entity IDs in the output embed the project id and the checkout directory name (`lievo-public` here); a reader's IDs will differ in those segments while the structure of the output is the same.
+
+```bash
+lievo query entities --project lievo "storage"
+```
+
+```
+ENTITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Name                                 Path                            Tier      Summary
+  add_output_dir                       src/storage/sqlite.rs           function  -
+  add_output_dir                       src/storage/sqlite_project.rs   function  -
+  add_output_dir                       src/storage/sqlite_ref_impl.rs  function  -
+  add_repo                             src/storage/sqlite_ref_impl.rs  function  -
+  add_repo                             src/storage/sqlite.rs           function  -
+  build_entity_search_query            src/storage/queries.rs          function  -
+  build_entity_search_query_with_tier  src/storage/queries.rs          function  -
+```
+
+Each row is a real entity in the index — a function, file, module, or subsystem — with its path, tier, and (if present) a cached summary. `lievo query entities` is keyword search; add `--semantic` for embedding-based search over the same index.
+
+The same query surface answers structural questions directly:
+
+```bash
+lievo query impact --project lievo src/storage/sqlite.rs src/storage/sqlite_project.rs
+```
+
+```
+Impact Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Changed files (2):
+  sqlite.rs (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:file:src/storage/sqlite.rs)
+  sqlite_project.rs (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:file:src/storage/sqlite_project.rs)
+Affected modules (1):
+  storage (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/storage)
+Affected subsystems (1):
+  root (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:subsystem:.)
+Downstream dependents (13):
+  examples (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:examples)
+  src (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src)
+  analysis (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/analysis)
+  bin (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/bin)
+  extraction (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/extraction)
+  mcp (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/mcp)
+  output (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/output)
+  query (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/query)
+  refresh (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/refresh)
+  retrieval (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/retrieval)
+  summarization (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/summarization)
+  tests (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:tests)
+  tests (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:subsystem:tests)
+Affected callers (170):
+  clear_entity_summary (fn-11147555045d4afc)
+  call (fn-114652013554a6b3)
+  symbols_matching_names (fn-122a0ae22177bf33)
+  list_repos (fn-224a0add5ca976a3)
+  count_direct_dependents (fn-24384cd8e0ede7e3)
+  search_entities_semantic (fn-25950b7434d856d5)
+```
+
+One query names the modules, subsystems, and functions affected by a change to a storage file — the cross-referencing an agent would otherwise do file by file. (The excerpt above is trimmed to the first few entries of each list; the full output names all 170 callers.)
+
+## Quickstart
+
+```bash
+# 1. Install (macOS/Linux; Windows and cargo install: see Install below)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
+
+# 2. Register lievo with your agent — e.g. Claude Code
+claude mcp add lievo --scope user -- lievo mcp
+# (`--scope` is a Claude Code flag, not a lievo flag)
+
+# 3. Index a repo and query it (from inside the repo)
+lievo refresh
+lievo query entities --project <name> "storage"
+```
+
+`lievo mcp` auto-registers the repo it is launched in and indexes it in the background.
+
 ## Why Lievo?
 
-Built-in file search is fast and text-based, but it has no model of how the code is structured. Lievo supplies that model:
+Built-in file search is fast and text-based, but it has no model of how the code is structured. Lievo supplies that model, and each of the four capabilities below ships in the current build:
 
-- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns
-- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files
-- **Pre-computed insights** — circular dependencies, complexity hotspots, and coupling metrics detected automatically
-- **Incremental and persistent** — knowledge survives across sessions and updates only when code changes
+- **Structure, not strings** — query subsystems, modules, and functions by meaning, not text patterns: `query subsystems`, `query modules`, `query entities --semantic`, and the `lievo_explore` symbol map all run against the structural index (`src/query/`, `src/retrieval/`)
+- **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (`src/storage/`, `src/query/`)
+- **Pre-computed insights** — circular dependencies, complexity and coupling hotspots, god modules, and coverage gaps are detected on every analysis run (`src/analysis/`)
+- **Incremental and persistent** — the index lives in SQLite, updates only when the code changes, and survives across sessions and agent restarts (`src/storage/`, `src/analysis/incremental.rs`)
 
 ## Evidence
 
-> Figures from benchmark run set b3, build `ff1ade0` (2026-09-24); see [issue #11](https://github.com/trail-openers/lievo/issues/11).
+> Figures from benchmark run set b3, build `ff1ade0` (2026-09-24).
 
 We benchmarked lievo against an agent's built-in tools on an anonymous 11,000-file commercial monorepo (Ruby on Rails backend, React frontend — lievo parses about 20% of the tracked files, so all tasks were scoped to the JavaScript portion). 435 runs: change-impact analysis n=30/arm, bug localization n=39/arm, multi-turn sustained work n=18/arm. Headless agents (Claude Sonnet), one pinned index, lievo build `ff1ade0` (2026-09-24); the benchmarked index was summarized via a generic OpenAI-compatible backend. Arms: baseline (Bash/Read/Grep/Glob, no index); lievo — those four tools plus lievo's MCP server, the shipping configuration; and lievo_only (lievo's MCP server only). Scoring: set-F1 of returned file paths against hand-authored gold derived from git history or hand-derived dependency closures. Comparisons are bootstrap 95% CIs on the difference; "tied" means the interval spans zero.
 
@@ -57,14 +138,6 @@ The shipping configuration never loses significantly on any suite: change-impact
 
 **MCP surface.** Only `lievo_explore` is listed to your agent by default; see [MCP integration](#mcp-integration) for the opt-in list.
 
-## Key features
-
-- `lievo refresh [<project>]` — run semantic code analysis and keep entity graph current
-- `lievo query` — inspect entities, relationships, subsystems, conventions, metrics, dependencies, and files
-- `lievo summarize [<project>]` — re-summarize entities with cached descriptions (alias: `sum`)
-- `lievo mcp [<project>]` — start the MCP server over stdio for agent integration
-- `lievo doctor [PATH]` — one-screen diagnostic: is lievo registered, indexed, and current here?
-
 ## Install
 
 Installation requires network access (GitHub and crates.io; the embedding model is fetched from Hugging Face on first use).
@@ -87,26 +160,14 @@ Falling back to Rust, or building from source:
 cargo install --git https://github.com/trail-openers/lievo.git
 ```
 
-**[Quickstart](docs/quickstart.md)** covers install without Rust, registering lievo once with your agent (Claude Code, Codex CLI, VS Code, Cursor, pi), first use, and troubleshooting with `lievo doctor`.
-
-## Getting started
-
-```bash
-cd /path/to/repo
-lievo refresh        # index the repo you're in
-lievo mcp            # start the MCP server for this repo
-```
-
-`lievo mcp` with no argument auto-resolves the git repo in the working directory and registers it if needed. An explicit project name still works: `lievo mcp myapp`.
-
-Then connect Claude Code or another MCP client to the server.
+Beyond the commands shown above, lievo also offers `lievo summarize` (re-summarize entities) and `lievo doctor` (one-screen diagnostic). See the [CLI Reference](docs/cli-reference.md) for the full command list.
 
 ## MCP integration
 
 Add lievo to Claude Code with:
 
 ```bash
-claude mcp add lievo -- lievo mcp
+claude mcp add lievo --scope user -- lievo mcp
 ```
 
 > `lievo mcp` auto-registers the repo it is launched in. An explicit project name (`lievo mcp myapp`) keeps the previous per-project behaviour.
@@ -115,7 +176,7 @@ Available MCP tools:
 
 `lievo_explore` is the only tool listed to the agent by default; every other tool below is hidden unless you set `LIEVO_MCP_TOOLS` (comma-separated tool names, e.g. `export LIEVO_MCP_TOOLS=get_entity,read_file`) before the server starts — see the [quickstart](docs/quickstart.md).
 
-- `lievo_explore` — the default tool. Tier 1 (default) symbol map, Tier 2 (`include_source=true`) verbatim source, `scope='<dir>'` file listing, `bundle='<dir>'` packed subsystem source — one call, no per-file re-reads.
+- `lievo_explore` — the default tool. Tier 1 (default) symbol map, Tier 2 (`include_source=true`) verbatim source, `scope="<dir>"` file listing, `bundle="<dir>"` packed subsystem source — one call, no per-file re-reads.
 - `search_entities` — search by name/keyword; set `semantic=true` for vector search
 - `get_entity` — full entity details by ID
 - `list_relationships` — dependencies and dependents for an entity
@@ -133,42 +194,7 @@ Available MCP tools:
 
 ## CLI reference
 
-### Admin workflows
-
-| Command | Purpose |
-| --- | --- |
-| `lievo admin create-project <name>` | Create a new project |
-| `lievo admin list-projects` | List all projects |
-| `lievo admin delete-project <name>` | Delete a project and all its data |
-| `lievo admin add-repo <path> [<project>]` | Register a repository and add to a project |
-| `lievo admin list-repos` | List repositories |
-| `lievo admin delete-repo <name> <project>` | Delete a repository and its analysis data |
-| `lievo admin info` | Show database information and statistics |
-| `lievo admin coverage [--project <name>]` | Show per-language extraction coverage metrics |
-| `lievo admin selfcheck --repo <path>` | Pinned-repo quality gate: edge correctness, false-0-callers, retrieval probes, payload-bytes floor |
-
-> Admin commands are only available under `lievo admin <subcommand>`. There are no top-level aliases for these commands.
-
-Query commands support human and JSON (`--format json`) output. See [CLI Output Contracts](docs/cli-output-contracts.md) for format details and [CLI Architecture](docs/cli-architecture.md) for design principles.
-
-### Query subcommands
-
-| Command | Purpose |
-| --- | --- |
-| `lievo query entities --project <name> <query>` | Search entities by keyword |
-| `lievo query entity --project <name> <entity-id>` | Show full entity details |
-| `lievo query relationships --project <name> <entity-id>` | Show dependencies and dependents |
-| `lievo query children --project <name> <entity-id>` | List child entities for a module or subsystem |
-| `lievo query flows --project <name>` | Show execution flows |
-| `lievo query docs --project <name>` | List project docs |
-| `lievo query subsystems --project <name>` | List subsystems with metrics |
-| `lievo query modules <subsystem-id>` | List modules in a subsystem |
-| `lievo query files <module-id>` | List files in a module |
-| `lievo query deps <entity-id>` | Show what an entity depends on |
-| `lievo query dependents <entity-id>` | Show what depends on an entity |
-| `lievo query impact <file> [<file>...]` | Show impact for changed files |
-| `lievo query hotspots --project <name>` | Show complexity and coupling hotspots |
-| `lievo query conventions --project <name>` | List detected conventions |
+See [CLI Reference](docs/cli-reference.md) for the full command list. `lievo refresh [<project>]`, `lievo mcp [<project>]`, and `lievo doctor [PATH]` are documented there. For format details see [CLI Output Contracts](docs/cli-output-contracts.md).
 
 ## License
 
