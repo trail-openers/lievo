@@ -425,6 +425,28 @@ fn search_entities_tool_has_schema() {
 }
 
 #[test]
+fn search_entities_wire_description_describes_embedding_not_treesitter() {
+    // Issue #15: the WIRE description agents see for semantic=true mode must
+    // describe the embedding-based (model2vec + usearch) vector search, not the
+    // stale "tree-sitter-based" phrasing (tree-sitter is for extraction, not
+    // semantic search).
+    use rmcp::handler::server::ServerHandler;
+    let server = make_server();
+    let tool = server
+        .get_tool("search_entities")
+        .expect("search_entities must be registered");
+    let desc = tool.description.as_deref().unwrap_or("");
+    assert!(
+        !desc.contains("tree-sitter"),
+        "wire description must not claim semantic search is tree-sitter-based: {desc}"
+    );
+    assert!(
+        desc.contains("embedding"),
+        "wire description must describe semantic search as embedding-based: {desc}"
+    );
+}
+
+#[test]
 fn lievo_explore_wire_description_carrying_call_directives() {
     // Issue #745: the WIRE description the agent sees must carry the four
     // directives — do-not-re-read, do-not-re-request, batch, and stop-when-complete
