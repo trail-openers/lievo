@@ -13,7 +13,7 @@ lievo indexes how your code fits together — modules, functions, and what calls
 - Long sessions on a big codebase — the map persists between sessions and updates only what changed.
 - Local — the index is a SQLite file on your machine; no account or API key needed to index and query.
 
-**Does it help? We measured it.** On long, multi-step work in an 11,000-file codebase, agents that had lievo alongside their normal search tools gave more precise answers than agents without it — fewer irrelevant files, just as many of the right ones (answer quality 0.66 vs 0.55). On quick lookups and on finding a bug from a description it made no measurable difference — and it never made results worse. Small study, one codebase, one model: full results and caveats → [docs/benchmarks.md](docs/benchmarks.md).
+**Does it help? We measured it.** On long, multi-step work in an 11,000-file codebase, agents that had lievo alongside their normal search tools gave more precise answers than agents without it — fewer irrelevant files, just as many of the right ones (answer quality 0.66 vs 0.55). On working out what a change will affect, and on finding a bug from a description, it made no measurable difference — and it never made results worse. Small study, one codebase, one model: full results and caveats → [docs/benchmarks.md](docs/benchmarks.md).
 
 An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested.
 
