@@ -1,15 +1,27 @@
 # lievo
 
-Lievo is a structural index of your codebase, built for people running coding agents on a large codebase. It maps the subsystems, modules, and functions in your repo and the relationships between them — imports, calls, contains — so an agent can answer structural questions in one query instead of cross-referencing dozens of files by hand. It works alongside your agent's built-in file search and read tools; it does not replace them.
-
-An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested. External agents like Claude Code and Cursor use lievo for documentation, Q&A, and codebase navigation.
+**Give your coding agent a map of your codebase.**
 
 [![CI](https://github.com/trail-openers/lievo/actions/workflows/ci.yml/badge.svg)](https://github.com/trail-openers/lievo/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
+lievo indexes how your code fits together — modules, functions, and what calls or imports what — and gives that map to your agent (Claude Code, Cursor, Codex and others) over MCP. Instead of grepping and reading file after file to work out how things connect, the agent asks once.
+
+**What it's for**
+
+- "What breaks if I change this?" — one query lists the affected modules and callers.
+- Long sessions on a big codebase — the map persists between sessions and updates only what changed.
+- Local — the index is a SQLite file on your machine; no account or API key needed to index and query.
+
+**Does it help? We measured it.** On long, multi-step work in an 11,000-file codebase, agents that had lievo alongside their normal search tools gave more precise answers than agents without it — fewer irrelevant files, just as many of the right ones (answer quality 0.66 vs 0.55). On quick lookups and on finding a bug from a description it made no measurable difference — and it never made results worse. Small study, one codebase, one model: full results and caveats → [docs/benchmarks.md](docs/benchmarks.md).
+
+An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested.
+
+**When it won't help:** lievo reads Rust, Python, JavaScript/TypeScript and Go only; code in other languages (Ruby, Java, C#, …) is invisible to it.
+
 ## What lievo returns
 
-The examples below were produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo mcp` and `lievo admin add-repo` both default the project name to the checkout directory name — and run the same commands with your project's name to reproduce them. The entity IDs in the output embed the project id and the checkout directory name (`lievo-public` here); a reader's IDs will differ in those segments while the structure of the output is the same.
+The example below was produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo mcp` and `lievo admin add-repo` both default the project name to the checkout directory name — and run the same command with your project's name to reproduce it.
 
 ```bash
 lievo query entities --project lievo "storage"
@@ -28,48 +40,7 @@ ENTITIES
   build_entity_search_query_with_tier  src/storage/queries.rs          function  -
 ```
 
-Each row is a real entity in the index — a function, file, module, or subsystem — with its path, tier, and (if present) a cached summary. `lievo query entities` is keyword search; add `--semantic` for embedding-based search over the same index.
-
-The same query surface answers structural questions directly:
-
-```bash
-lievo query impact --project lievo src/storage/sqlite.rs src/storage/sqlite_project.rs
-```
-
-```
-Impact Analysis
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Changed files (2):
-  sqlite.rs (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:file:src/storage/sqlite.rs)
-  sqlite_project.rs (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:file:src/storage/sqlite_project.rs)
-Affected modules (1):
-  storage (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/storage)
-Affected subsystems (1):
-  root (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:subsystem:.)
-Downstream dependents (13):
-  examples (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:examples)
-  src (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src)
-  analysis (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/analysis)
-  bin (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/bin)
-  extraction (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/extraction)
-  mcp (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/mcp)
-  output (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/output)
-  query (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/query)
-  refresh (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/refresh)
-  retrieval (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/retrieval)
-  summarization (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:src/summarization)
-  tests (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:module:tests)
-  tests (b1a828df-75b4-4fa0-8ddf-e5960e1c4bf4:lievo-public:subsystem:tests)
-Affected callers (170):
-  clear_entity_summary (fn-11147555045d4afc)
-  call (fn-114652013554a6b3)
-  symbols_matching_names (fn-122a0ae22177bf33)
-  list_repos (fn-224a0add5ca976a3)
-  count_direct_dependents (fn-24384cd8e0ede7e3)
-  search_entities_semantic (fn-25950b7434d856d5)
-```
-
-One query names the modules, subsystems, and functions affected by a change to a storage file — the cross-referencing an agent would otherwise do file by file. (The excerpt above is trimmed to the first few entries of each list; the full output names all 170 callers.)
+Each row is a real entity in the index — a function, file, module, or subsystem — with its path, tier, and (if present) a cached summary. `lievo query entities` is keyword search; add `--semantic` for embedding-based search over the same index. The same query surface answers structural questions directly: `lievo query impact --project lievo src/storage/sqlite.rs` lists the modules, subsystems, and functions affected by a change to that file — the cross-referencing an agent would otherwise do file by file.
 
 ## Quickstart
 
@@ -96,35 +67,6 @@ Built-in file search is fast and text-based, but it has no model of how the code
 - **Relationships built in** — "what depends on this?" is one query, not a manual cross-reference of dozens of files: `query relationships`, `query deps`, `query dependents`, `query impact` read the stored call/import/containment graph (`src/storage/`, `src/query/`)
 - **Pre-computed insights** — circular dependencies, complexity and coupling hotspots, god modules, and coverage gaps are detected on every analysis run (`src/analysis/`)
 - **Incremental and persistent** — the index lives in SQLite, updates only when the code changes, and survives across sessions and agent restarts (`src/storage/`, `src/analysis/incremental.rs`)
-
-## Evidence
-
-> Figures from benchmark run set b3, build `ff1ade0` (2026-09-24).
-
-We benchmarked lievo against an agent's built-in tools on an anonymous 11,000-file commercial monorepo (Ruby on Rails backend, React frontend — lievo parses about 20% of the tracked files, so all tasks were scoped to the JavaScript portion). 435 runs: change-impact analysis n=30/arm, bug localization n=39/arm, multi-turn sustained work n=18/arm. Headless agents (Claude Sonnet), one pinned index, lievo build `ff1ade0` (2026-09-24); the benchmarked index was summarized via a generic OpenAI-compatible backend. Arms: baseline (Bash/Read/Grep/Glob, no index); lievo — those four tools plus lievo's MCP server, the shipping configuration; and lievo_only (lievo's MCP server only). Scoring: set-F1 of returned file paths against hand-authored gold derived from git history or hand-derived dependency closures. Comparisons are bootstrap 95% CIs on the difference; "tied" means the interval spans zero.
-
-**Headline — the shipping configuration, on multi-turn sustained work:** built-ins + lievo vs built-ins alone scores F1 0.657 vs 0.550, delta +0.106 [+0.007, +0.206], significant, n=18/arm, at the highest recall of any arm, 0.980 vs baseline 0.958.
-
-| Arm | Multi-turn F1 | Multi-turn resident context | Change-impact F1 |
-| --- | --- | --- | --- |
-| baseline (built-ins only) | 0.550 | 337,297 tokens | 0.951 |
-| lievo (built-ins + lievo, shipping config) | **0.657** (+0.106 [+0.007, +0.206], significant) | −92,667 tokens [−205,049, +20,833] (tied) | 0.926 (−0.025 [−0.054, +0.002], tied) |
-| lievo_only (lievo only) | 0.781 (baseline 0.550; +0.232 [+0.110, +0.328], significant) | 129,068 tokens vs baseline 337,297 (−207,353 [−304,133, −119,403], significant) | 0.765 (baseline 0.951; −0.186 [−0.224, −0.150], significant — worse than built-ins alone) |
-
-The lievo_only row is a replacement configuration, not a recommendation: it wins multi-turn F1 and resident context, and it loses change-impact F1.
-
-Across 18 multi-turn sessions the shipping configuration made 114 `lievo_explore` calls plus 477 built-in calls (Read 177, Grep 126, Bash 110, Glob 64), and its lievo call mix is near-identical to the lievo_only arm's: lievo is added to the built-ins rather than substituted for them.
-
-The shipping configuration never loses significantly on any suite: change-impact F1 0.926 vs 0.951 (−0.025 [−0.054, +0.002], tied) and change-impact tokens −3,161 [−51,401, +47,631] (tied); bug localization F1 0.331 vs 0.371 (−0.041 [−0.193, +0.110], tied — a replicated null across three runs, n=26, n=39, n=39) and tokens +136,872 [−325,880, +612,437] (tied); multi-turn resident context −92,667 [−205,049, +20,833] (tied).
-
-**Caveats, stated next to the numbers:**
-
-- Single repository, single model (Claude Sonnet), JavaScript portion only.
-- Bug localization is a replicated null.
-- The multi-turn gold set is directory-shaped (it favours recall for every arm — the metric that matters there is resident context at equal recall).
-- n=18–39 per arm; ballpark figures with stated intervals, not a peer-reviewed study.
-- Measured on build `ff1ade0` (2026-09-24) — later builds changed the retrieval and response contract, so these figures are not expected to reproduce on v0.1.0.
-- The raw data is not published.
 
 ## Capabilities and limitations
 
