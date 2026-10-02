@@ -425,6 +425,70 @@ fn search_entities_tool_has_schema() {
 }
 
 #[test]
+fn search_entities_wire_description_describes_embedding_not_treesitter() {
+    // Issue #15: the WIRE description agents see for semantic=true mode must
+    // describe the embedding-based (model2vec + usearch) vector search, not the
+    // stale "tree-sitter" phrasing (tree-sitter is for extraction, not
+    // semantic search).
+    use rmcp::handler::server::ServerHandler;
+    let server = make_server();
+    let tool = server
+        .get_tool("search_entities")
+        .expect("search_entities must be registered");
+    let desc = tool.description.as_deref().unwrap_or("");
+    assert!(
+        !desc.contains("tree-sitter"),
+        "wire description must not claim semantic search is tree-sitter based: {desc}"
+    );
+    assert!(
+        desc.contains("embedding"),
+        "wire description must describe semantic search as embedding-based: {desc}"
+    );
+}
+
+#[test]
+fn search_entities_tool_description_and_schema_describe_embedding_not_treesitter() {
+    // Issue #15: the hand-written SearchEntitiesTool::description() and the
+    // input_schema() semantic property description must also describe the
+    // embedding-based vector search, not the stale tree-sitter phrasing
+    use crate::retrieval::tool_trait::Tool;
+    use crate::retrieval::tools::SearchEntitiesTool;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("test-project", None).unwrap();
+    let ctx = Arc::new(ToolContext {
+        storage: Arc::new(Mutex::new(storage)),
+        project_id: project.id,
+        repo_path: PathBuf::new(),
+        output_dir: None,
+        zero_repo_guidance: None,
+    });
+    let tool = SearchEntitiesTool { ctx };
+    let desc = tool.description();
+    assert!(
+        !desc.contains("tree-sitter"),
+        "Tool::description must not claim semantic search is tree-sitter based: {desc}"
+    );
+    assert!(
+        desc.contains("embedding"),
+        "Tool::description must describe semantic search as embedding-based: {desc}"
+    );
+
+    let schema = tool.input_schema();
+    let semantic_desc = schema
+        .pointer("/properties/semantic/description")
+        .and_then(|v| v.as_str())
+        .expect("semantic property description must exist in input_schema");
+    assert!(
+        !semantic_desc.contains("tree-sitter"),
+        "semantic property description must not claim tree-sitter based search: {semantic_desc}"
+    );
+    assert!(
+        semantic_desc.contains("embedding"),
+        "semantic property description must be embedding-based: {semantic_desc}"
+    );
+}
+
+#[test]
 fn lievo_explore_wire_description_carrying_call_directives() {
     // Issue #745: the WIRE description the agent sees must carry the four
     // directives — do-not-re-read, do-not-re-request, batch, and stop-when-complete

@@ -72,7 +72,7 @@ pub(super) fn try_load_semantic_searcher(
     Option<Box<dyn crate::retrieval::semantic_searcher::SemanticSearcher>>,
     Option<String>,
 ) {
-    // Load UsearchSearcher (tree-sitter based semantic search)
+    // Load UsearchSearcher (embedding-based (model2vec + usearch) semantic search)
     let path = std::path::Path::new(index_path);
     match crate::retrieval::usearch_searcher::UsearchSearcher::load(path) {
         Ok(searcher) => {
@@ -102,7 +102,7 @@ impl<S: Storage + Send> Tool for SearchEntitiesTool<S> {
     }
 
     fn description(&self) -> &str {
-        "Search for entities by name or keyword. Set semantic=true to use tree-sitter-based semantic code search (intelligently finds related code even without exact name matches). Falls back to name/path matching if no vector index exists — run 'lievo refresh' to build the index."
+        "Search for entities by name or keyword. Set semantic=true to use embedding-based (vector) search (intelligently finds related code even without exact name matches). Falls back to name/path matching if no vector index exists — run 'lievo refresh' to build the index."
     }
 
     fn input_schema(&self) -> Value {
@@ -119,7 +119,7 @@ impl<S: Storage + Send> Tool for SearchEntitiesTool<S> {
                 },
                 "semantic": {
                     "type": "boolean",
-                    "description": "Whether to use semantic search (tree-sitter-based). When true, uses intelligent code search instead of simple name/path matching. Default false."
+                    "description": "Whether to use embedding-based (vector) search. When true, uses intelligent code search instead of simple name/path matching. Default false."
                 },
                 "tier": {
                     "type": "string",
