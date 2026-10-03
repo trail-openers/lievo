@@ -11,11 +11,9 @@ lievo indexes how your code fits together — modules, functions, and what calls
 
 - "What breaks if I change this?" — one query lists the affected modules and callers.
 - Long sessions on a big codebase — the map persists between sessions and updates only what changed.
-- Local — the index is a SQLite file on your machine; no account or API key needed to index and query.
+- Local — the index is a SQLite file on your machine; no account or API key needed. The only download is a one-time ~16 MB embedding model for semantic search.
 
 **Does it help? We measured it.** On long, multi-step work in an 11,000-file codebase, agents that had lievo alongside their normal search tools gave more precise answers than agents without it — fewer irrelevant files, just as many of the right ones (answer quality 0.66 vs 0.55). On working out what a change will affect, and on finding a bug from a description, it made no measurable difference — and it never made results worse. Small study, one codebase, one model: full results and caveats → [docs/benchmarks.md](docs/benchmarks.md).
-
-An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested.
 
 **When it won't help:** lievo reads Rust, Python, JavaScript/TypeScript and Go only; code in other languages (Ruby, Java, C#, …) is invisible to it.
 
@@ -40,7 +38,13 @@ ENTITIES
   build_entity_search_query_with_tier  src/storage/queries.rs          function  -
 ```
 
-Each row is a real entity in the index — a function, file, module, or subsystem — with its path, tier, and (if present) a cached summary. `lievo query entities` is keyword search; add `--semantic` for embedding-based search over the same index. The same query surface answers structural questions directly: `lievo query impact --project lievo src/storage/sqlite.rs` lists the modules, subsystems, and functions affected by a change to that file — the cross-referencing an agent would otherwise do file by file.
+Each row is a real entity in the index — a function, file, module, or subsystem — with its path, tier, and (if present) a cached summary. `lievo query entities` is keyword search; add `--semantic` for embedding-based search over the same index. The same surface also answers structural questions:
+
+```bash
+lievo query impact --project lievo src/storage/sqlite.rs
+```
+
+This lists the modules, subsystems, and functions affected by a change to that file — the cross-referencing an agent would otherwise do file by file.
 
 ## Quickstart
 
@@ -60,6 +64,8 @@ lievo query entities --project <name> "storage"
 `lievo mcp` auto-registers the repo it is launched in and indexes it in the background.
 
 ## Why Lievo?
+
+An index and a grep are complements, not substitutes. Adding lievo to an agent that already has file search makes it measurably better at sustained work on a large codebase, and never measurably worse at anything we tested.
 
 Built-in file search is fast and text-based, but it has no model of how the code is structured. Lievo supplies that model, and each of the four capabilities below ships in the current build:
 

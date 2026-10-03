@@ -1,5 +1,7 @@
 # Benchmarks
 
+These figures were measured on a pre-release build (`ff1ade0`, 2026-09-24) and are not expected to reproduce exactly on current releases; see the caveats below.
+
 > Figures from benchmark run set b3, build `ff1ade0` (2026-09-24).
 
 We benchmarked lievo against an agent's built-in tools on an anonymous 11,000-file commercial monorepo (Ruby on Rails backend, React frontend — lievo parses about 20% of the tracked files, so all tasks were scoped to the JavaScript portion). 435 runs: change-impact analysis n=30/arm, bug localization n=39/arm, multi-turn sustained work n=18/arm. Headless agents (Claude Sonnet), one pinned index, lievo build `ff1ade0` (2026-09-24); the benchmarked index was summarized via a generic OpenAI-compatible backend. Arms: baseline (Bash/Read/Grep/Glob, no index); lievo — those four tools plus lievo's MCP server, the shipping configuration; and lievo_only (lievo's MCP server only). Scoring: set-F1 of returned file paths against hand-authored gold derived from git history or hand-derived dependency closures. Comparisons are bootstrap 95% CIs on the difference; "tied" means the interval spans zero.
