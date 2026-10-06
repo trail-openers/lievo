@@ -1,15 +1,25 @@
 // End-to-end integration test for the full analyze + query cycle.
 //
-// Decision (#809): this test RUNS in the main CI job (blocking, every push/PR).
-// It is in-memory (SqliteStorage::open_in_memory), network-free (no ONNX model
-// download — embedding-model download only fires when the vector index is stale),
-// and cheap. The repo path defaults to the current directory, which in CI is the
-// lievo checkout itself (~30 s of analysis). Set LIEVO_TEST_REPO to a different
-// git repo to analyze a different target.
+// Hermetic by construction (#20, after the #809 decision): the test always
+// analyzes the small in-tree fixture (tests/fixtures/sample_repo), copied into
+// a git-initialized temp dir and dropped on cleanup. Summarization and the
+// semantic index are both off (no_summarize: true, skip_semantic_index: true),
+// so the test never runs a summarizer and never downloads the embedding
+// model, regardless of what is installed on the host (e.g. apfel on PATH).
+// It uses in-memory storage. A scoped probe verifies the only side effect on
+// the developer's real ~/.lievo/indices is the empty ts-index dir skeleton
+// for the fixture's own hash (cleaned up by the test itself); no other entry
+// under ~/.lievo/indices is read, asserted on, or touched.
+//
+// Decision (#809): this test RUNS in the main CI job (blocking, every push/PR)
+// and is cheap (seconds, not minutes).
 use lievo::analysis::pipeline::{AnalysisPipeline, PipelineConfig, ReindexMode};
+use lievo::extraction::ts_index_dir_for_repo;
 use lievo::query::{dependency, entity_queries};
 use lievo::storage::Storage;
 use lievo::storage::sqlite::SqliteStorage;
+
+pub mod common;
 
 #[test]
 fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,15 +29,13 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     // 2. Create project
     let project = storage.create_project("test-project", Some("Integration test"))?;
 
-    // 3. Register the lievo repo itself as the target
-    let repo_path = match std::env::var("LIEVO_TEST_REPO") {
-        Ok(p) => std::path::PathBuf::from(p),
-        Err(_) => std::env::current_dir()?,
-    };
+    // 3. Prepare the pinned fixture repo (temp dir + git init, dropped on cleanup).
+    let fixture = common::prepare_fixture_repo()?;
+    let repo_path = fixture.path().to_path_buf();
 
     let repo = storage.add_repo(
         &project.id,
-        "lievo",
+        "fixture",
         repo_path.to_str().ok_or("repo path is not valid UTF-8")?,
     )?;
     let _ = repo; // used indirectly via list_repos below
@@ -39,23 +47,79 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     let config = PipelineConfig {
         respect_ignore: true,
         reindex: ReindexMode::Incremental,
-        no_summarize: false,
-        skip_semantic_index: false,
+        no_summarize: true,
+        skip_semantic_index: true,
     };
+
+    // Scoped probe: the pipeline unconditionally creates
+    // ~/.lievo/indices/<fixture-hash>/ts-index (TreeSitterExtractor::index
+    // runs fs::create_dir_all on ts_index_dir_for_repo), so we verify that
+    // hash dir is the only side effect and clean it up. The temp path is new,
+    // so the hash dir must not already exist; if it does, something is wrong
+    // and we fail rather than touching it.
+    let ts_index_dir =
+        ts_index_dir_for_repo(&repo_path).map_err(|e| format!("ts_index_dir_for_repo: {e}"))?;
+    let hash_dir = ts_index_dir
+        .parent()
+        .ok_or("ts-index dir has no parent (unexpected)")?;
+
+    if hash_dir.exists() {
+        return Err(format!(
+            "hash dir {hash_dir:?} already exists before the analyze call; \
+             the temp fixture path should be new — refusing to touch it"
+        )
+        .into());
+    }
+
     let result = AnalysisPipeline::run_repo(&storage, &repos[0], &config)?;
     assert!(result.is_some(), "analysis should produce a run record");
     let run = result.expect("analysis run should exist");
+
+    // Post-run probe (#20): run_repo always creates the hash dir
+    // (TreeSitterExtractor::index runs fs::create_dir_all on
+    // ts_index_dir_for_repo), so the "must not pre-exist" guard above is
+    // paired here with an explicit existence assert. With
+    // skip_semantic_index: true the dir must contain only an empty
+    // `ts-index` directory; delete exactly that dir.
+    assert!(
+        hash_dir.is_dir(),
+        "hash dir {hash_dir:?} must exist after run_repo (issue #20)"
+    );
+    let mut entries = std::fs::read_dir(hash_dir)
+        .expect("read fixture hash dir under ~/.lievo/indices")
+        .map(|e| e.expect("hash dir entry").file_name())
+        .collect::<Vec<_>>();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["ts-index"],
+        "hash dir {hash_dir:?} must contain only the ts-index directory, got: {entries:?}"
+    );
+    assert!(
+        ts_index_dir.is_dir(),
+        "expected ts-index at {ts_index_dir:?} to be a directory"
+    );
+    let ts_index_entries = std::fs::read_dir(&ts_index_dir)
+        .expect("read ts-index dir")
+        .count();
+    assert_eq!(
+        ts_index_entries, 0,
+        "ts-index dir {ts_index_dir:?} must be empty (skip_semantic_index: true writes no files)"
+    );
+    std::fs::remove_dir_all(hash_dir)
+        .map_err(|e| format!("remove fixture hash dir {hash_dir:?} under ~/.lievo/indices: {e}"))?;
+
     assert!(
         run.entities_upserted >= 5,
-        "analysis should extract at least 5 entities from lievo's codebase, got {}",
+        "analysis should extract at least 5 entities from the fixture, got {}",
         run.entities_upserted
     );
 
-    // 5. Query: subsystems — lievo has multiple top-level modules (storage, analysis, query, …)
+    // 5. Query: subsystems — the fixture spans src/, treeA/, treeB/ top-level dirs
     let subsystems = entity_queries::subsystems(&storage, &project.id)?;
     assert!(
         subsystems.len() >= 3,
-        "lievo codebase should have at least 3 subsystems, got {}",
+        "fixture should have at least 3 subsystems, got {}",
         subsystems.len()
     );
 
@@ -83,7 +147,7 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
         .sum();
     assert!(
         total_modules >= 5,
-        "lievo codebase should have at least 5 modules total, got {}",
+        "fixture should have at least 5 modules total, got {}",
         total_modules
     );
 
@@ -112,7 +176,7 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     // 8. Verify relationships were built
     assert!(
         run.relationships_upserted >= 10,
-        "lievo codebase should produce at least 10 relationships, got {}",
+        "fixture should produce at least 10 relationships, got {}",
         run.relationships_upserted
     );
 

@@ -1,6 +1,6 @@
 // Tests for help structure and visual separation between daily and admin workflows.
 
-mod common;
+pub mod common;
 
 #[test]
 fn test_help_separates_daily_and_admin_workflows() {
