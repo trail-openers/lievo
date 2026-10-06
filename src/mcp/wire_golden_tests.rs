@@ -1,5 +1,5 @@
-//! Golden test pinning the byte-identical wire output of every MCP tool
-//! (issue #22, acceptance criterion 2).
+//! Golden test pinning the wire output of every MCP tool (issue #22,
+//! acceptance criterion 2).
 //!
 //! The `#[tool_router]` macro in `tools.rs` builds each tool's wire description
 //! from the `#[tool]` attribute literal and each tool's `input_schema` from the
@@ -7,8 +7,8 @@
 //! `Tool::input_schema()` / `Tool::meta()` methods were removed in this PR
 //! (see `src/retrieval/tool_trait.rs`); this test proves the wire surface is
 //! unchanged by comparing a freshly-serialized dump of every tool against a
-//! committed golden file (`tests/fixtures/mcp_wire_tools.json`) generated
-//! from `main` BEFORE the removal.
+//! committed golden file (`tests/fixtures/mcp_wire_tools.json`) generated from
+//! `main` BEFORE the removal.
 //!
 //! If this test fails, the wire output has changed — re-read the diff and
 //! update the fixture in the same PR with a note explaining the change.
@@ -22,27 +22,48 @@ use crate::retrieval::tools::ToolContext;
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
 
-/// The wire tools registered by the `#[tool_router]` macro in `tools.rs`
-/// (name literals from the `#[tool(name = ...)]` attributes). Kept in sync
-/// with the fixture; a rename or retire in `tools.rs` fails this test loudly
-/// so the golden file is updated in the same PR.
-const WIRE_TOOL_NAMES: [&str; 15] = [
-    "search_entities",
-    "get_entity",
-    "list_relationships",
-    "list_subsystems",
-    "get_function",
-    "get_conventions",
-    "get_insights",
-    "read_file",
-    "list_directory",
-    "get_execution_flows",
-    "list_project_docs",
-    "read_project_doc",
-    "get_impact",
-    "get_hotspots",
-    "lievo_explore",
-];
+/// The full allowlist string the golden dump needs in `LIEVO_MCP_TOOLS` so
+/// `InterceptingMcpServer` serves every tool (the default allowlist would only
+/// expose `lievo_explore`, which would make the dump partial). Derived from the
+/// golden fixture's `name` fields, not hard-coded: a rename or retire in
+/// `tools.rs` surfaces as a mismatch below rather than a silent partial dump.
+fn fixture_tool_names(golden: &serde_json::Value) -> Vec<String> {
+    golden["tools"]
+        .as_array()
+        .expect("golden fixture must contain a \"tools\" array")
+        .iter()
+        .map(|entry| {
+            entry["name"]
+                .as_str()
+                .expect("each tool entry must have a \"name\"")
+                .to_string()
+        })
+        .collect()
+}
+
+/// RAII guard that serializes `LIEVO_MCP_TOOLS` mutation against every other
+/// env-mutating test in the crate (the lock holds for the guard's lifetime) and
+/// guarantees the variable is removed before the guard drops — even on a panic
+/// mid-test — so a poisoned lock or leaked variable cannot cascade.
+struct ToolEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ToolEnvGuard {
+    fn set_full_allowlist(tool_names: &[String]) -> Self {
+        let _lock = crate::test_env_support::env_lock();
+        unsafe { std::env::set_var("LIEVO_MCP_TOOLS", tool_names.join(",")) };
+        Self { _lock }
+    }
+}
+
+impl Drop for ToolEnvGuard {
+    fn drop(&mut self) {
+        // The env lock (`_lock`) is still held here, so this removal serializes
+        // against other env-mutating tests.
+        unsafe { std::env::remove_var("LIEVO_MCP_TOOLS") };
+    }
+}
 
 fn make_server() -> crate::mcp::LievoMcpServer {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -59,26 +80,36 @@ fn make_server() -> crate::mcp::LievoMcpServer {
 
 /// Serialize every wire tool (name, description, input_schema, meta) the way
 /// the golden file was generated, so the comparison is apples-to-apples.
-fn build_golden_entries() -> serde_json::Value {
-    let _guard = crate::test_env_support::env_lock();
+fn build_golden_entries(tool_names: &[String]) -> serde_json::Value {
     let inner = make_server();
-    // Verify every expected tool is registered on the inner server before
-    // wrapping, so a rename/retire in tools.rs fails loudly rather than
-    // silently producing a partial dump.
-    for name in WIRE_TOOL_NAMES {
+    // Enumerate the tools the inner server (the `#[tool_router]`, unfiltered by
+    // the interceptor) actually registers and assert none are missing from the
+    // fixture: a rename or retire in `tools.rs` fails loudly here rather than
+    // silently producing a partial dump. (The interceptor's `get_tool` filters
+    // by allowlist, so the inner server is the right place to ask "what is
+    // registered".)
+    let registered = inner.registered_tool_names();
+    for name in tool_names {
         assert!(
             inner.get_tool(name).is_some(),
             "expected tool {name} to be registered in tools.rs"
         );
     }
+    // The server must expose no tool the fixture does not know about.
+    for name in &registered {
+        assert!(
+            tool_names.iter().any(|t| t == name),
+            "server registers tool {name} which is absent from the golden fixture — \
+             the fixture is out of date; update tests/fixtures/mcp_wire_tools.json"
+        );
+    }
     // Reconstruct the interceptor with the full allowlist so it serves all
     // tools (the default allowlist would only expose lievo_explore, which
     // would make the dump partial).
-    unsafe { std::env::set_var("LIEVO_MCP_TOOLS", WIRE_TOOL_NAMES.join(",")) };
+    let _guard = ToolEnvGuard::set_full_allowlist(tool_names);
     let wrapped = crate::mcp::InterceptingMcpServer::new(inner);
-    let names: Vec<&str> = WIRE_TOOL_NAMES.to_vec();
     let mut entries = Vec::new();
-    for name in names {
+    for name in tool_names {
         let tool = wrapped
             .get_tool(name)
             .unwrap_or_else(|| panic!("tool {name} not served after full allowlist"));
@@ -90,10 +121,9 @@ fn build_golden_entries() -> serde_json::Value {
         }));
     }
     let doc = serde_json::json!({ "tools": entries });
-    // Reset the env var so this test doesn't leak the full allowlist to
-    // other tests (env_lock serializes us; removing the var here is the
-    // polite thing to do for any follow-on test in the same process).
-    unsafe { std::env::remove_var("LIEVO_MCP_TOOLS") };
+    // The guard's Drop removes LIEVO_MCP_TOOLS (holding the env lock), so no
+    // full allowlist leaks to other tests even if the rest of this function
+    // panics.
     doc
 }
 
@@ -105,14 +135,20 @@ fn wire_tools_match_golden() {
         .unwrap_or_else(|e| panic!("failed to read golden file {golden_path:?}: {e}"));
     let golden: serde_json::Value = serde_json::from_slice(&golden_bytes)
         .unwrap_or_else(|e| panic!("golden file {golden_path:?} is not valid JSON: {e}"));
-    let current = build_golden_entries();
-    let golden_str = serde_json::to_string_pretty(&golden).unwrap();
-    let current_str = serde_json::to_string_pretty(&current).unwrap();
-    assert_eq!(
-        current_str, golden_str,
-        "MCP wire output changed from the committed golden file at {golden_path:?}. \
-         Either the change is intentional (update the golden file in the same PR with a \
-         note in the commit message) or the removal of the hand-written Tool trait \
-         methods accidentally altered the wire surface (fix the code, not the golden)."
-    );
+    let tool_names = fixture_tool_names(&golden);
+    let current = build_golden_entries(&tool_names);
+    // Compare semantic JSON equality first: the wire surface is the JSON value,
+    // not a particular byte layout, so a key-reorder or re-serialization of the
+    // fixture must not fail the test.
+    if current != golden {
+        let golden_str = serde_json::to_string_pretty(&golden).unwrap();
+        let current_str = serde_json::to_string_pretty(&current).unwrap();
+        panic!(
+            "MCP wire output changed from the committed golden file at {golden_path:?}. \
+             The change is either intentional (update the golden file in the same PR \
+             with a note in the commit message) or the removal of the hand-written Tool \
+             trait methods accidentally altered the wire surface (fix the code, not the \
+             golden).\n\n--- golden (tests/fixtures/mcp_wire_tools.json) ---\n{golden_str}\n\n--- current ---\n{current_str}\n"
+        );
+    }
 }

@@ -227,13 +227,17 @@ fn hub_over_cap_hint_states_true_count_and_ceiling() {
 
 /// The lievo_explore wire input schema pins exactly eight properties — the
 /// lean completeness hint (issue #767) is an output-only change, so no new
-/// input parameter was added. The former trait-schema description assertion
-/// ("include_depth=true to retrieve them") could not be re-pointed: that text
-/// existed only in the now-deleted hand-written `ExploreTool::input_schema`
-/// json! and is absent from the schemars-derived wire description
-/// (`ExploreParams.include_depth` doc-comment, `src/mcp/params.rs`). Issue #22
-/// workstream b: the description-content assertion is dropped, not weakened —
-/// there is no wire surface to assert on. The 8-property pin is kept.
+/// input parameter was added.
+///
+/// The wire schema *does* describe `include_depth` (the
+/// `ExploreParams.include_depth` doc-comment in `src/mcp/params.rs` becomes the
+/// schemars-derived wire description). But the specific lean-hint text —
+/// "include_depth=true to retrieve them" — lived only in the now-deleted
+/// hand-written `ExploreTool::input_schema` json! and is absent from that wire
+/// description. Re-pointing the old description-content assertion at the wire
+/// surface would have changed the wire text, which issue #22 forbids. So the
+/// description-content assertion is dropped, not weakened; the 8-property pin
+/// is kept.
 #[test]
 fn lievo_explore_wire_schema_has_exactly_eight_properties() {
     let (storage, project_id, _repo_id) = setup();

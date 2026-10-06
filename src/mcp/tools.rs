@@ -31,6 +31,11 @@ pub struct LievoMcpServer {
         dead_code,
         reason = "Required by #[tool_router] macro; populated in new(), read by macro-generated code"
     )]
+    // The `#[cfg(test)] registered_tool_names` accessor reads this field in
+    // test builds, where the `dead_code` expectation above is unfulfilled;
+    // silence that lint for test builds only (non-test builds rely on the
+    // macro-generated reads).
+    #[cfg_attr(test, allow(unfulfilled_lint_expectations))]
     tool_router: tool_mod::ToolRouter<LievoMcpServer>,
 }
 
@@ -53,6 +58,18 @@ impl LievoMcpServer {
             Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
             Err(e) => Ok(success_shaped_error(&e)),
         }
+    }
+
+    /// Names of every tool registered by the `#[tool_router]` macro, sorted
+    /// (test-only; the `list_tools` trait method needs a `RequestContext`, so
+    /// the golden test enumerates through this instead — issue #22 lens fix).
+    #[cfg(test)]
+    pub fn registered_tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect()
     }
 }
 
