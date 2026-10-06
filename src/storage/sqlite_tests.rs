@@ -796,3 +796,32 @@ fn test_update_repo_local_path_unique_constraint_error() {
     let fetched = storage.get_repo(&repo_a.id).unwrap().unwrap();
     assert_eq!(fetched.local_path, "/path/to/repo-a");
 }
+
+/// update_repo_local_path must reject `None` for `new_index_path` to enforce
+/// the documented invariant that `local_path` and `index_path` are always
+/// coupled — a valid `local_path` with a NULL `index_path` is silent state
+/// corruption that downstream code would misread as "index never set".
+#[test]
+fn test_update_repo_local_path_rejects_none_index_path() {
+    use crate::LievoError;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("test", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/path/to/repo1")
+        .unwrap();
+
+    // Passing None for new_index_path must be rejected as InvalidInput.
+    let result = storage.update_repo_local_path(&repo.id, "/new/path", None);
+    assert!(
+        result.is_err(),
+        "update_repo_local_path must reject None for new_index_path"
+    );
+    assert!(
+        matches!(result.unwrap_err(), LievoError::InvalidInput(_)),
+        "rejection of None new_index_path must surface as InvalidInput"
+    );
+
+    // The repo's local_path must be unchanged (no partial write).
+    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(fetched.local_path, "/path/to/repo1");
+}

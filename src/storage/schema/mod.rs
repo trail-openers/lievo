@@ -3,7 +3,7 @@ use crate::Result;
 use crate::error::LievoError;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 pub const SCHEMA_V1: &str = r#"
 -- Projects (top-level umbrella, spans multiple repos)
 CREATE TABLE projects (
@@ -424,6 +424,21 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             conn.execute_batch("ALTER TABLE repositories ADD COLUMN unresolved_external INTEGER")?;
         }
         conn.pragma_update(None, "user_version", 10)?;
+        conn.execute_batch("COMMIT")?;
+    }
+
+    // Version 10 -> 11: index repositories.git_url (issue #31).
+    // FIND_REPOS_BY_GIT_URL filters on this column; without an index every
+    // identity lookup is a full table scan that degrades as the registry
+    // grows. A plain (non-partial) index suffices and also serves future
+    // queries on the column.
+    if version == 10 {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repos_git_url ON repositories(git_url)",
+            [],
+        )?;
+        conn.pragma_update(None, "user_version", 11)?;
         conn.execute_batch("COMMIT")?;
     }
 

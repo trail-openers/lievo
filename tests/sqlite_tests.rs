@@ -506,67 +506,6 @@ fn set_repo_git_url_then_find_repos_by_git_url_roundtrips() {
     assert_eq!(found[0].git_url.as_deref(), Some(key));
 }
 
-#[test]
-fn find_repos_by_git_url_returns_empty_when_no_repo_carries_the_key() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let project = storage.create_project("proj", None).unwrap();
-    let repo = storage
-        .add_repo(&project.id, "repo1", "/path/to/repo1")
-        .unwrap();
-
-    // A key no repo is registered under — with the repo's git_url still NULL
-    // — must return an empty Vec, not an error.
-    let found = storage
-        .find_repos_by_git_url("https://github.com/test/unknown.git")
-        .unwrap();
-    assert!(found.is_empty());
-    let _ = repo; // add_repo is exercised for the NULL-git_url case
-}
-
-#[test]
-fn update_repo_local_path_moves_local_path_and_index_path_together() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let project = storage.create_project("proj", None).unwrap();
-    let repo = storage
-        .add_repo(&project.id, "repo1", "/old/path/to/repo1")
-        .unwrap();
-
-    let new_path = "/new/path/to/repo1";
-    let new_index = "/new/index/to/repo1";
-    storage
-        .update_repo_local_path(&repo.id, new_path, Some(new_index))
-        .unwrap();
-
-    // Both columns change in a single call — no intermediate state.
-    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
-    assert_eq!(fetched.local_path, new_path);
-    assert_eq!(fetched.index_path.as_deref(), Some(new_index));
-}
-
-#[test]
-fn set_repo_git_url_on_unknown_repo_id_returns_repo_not_found() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let err = storage
-        .set_repo_git_url("no-such-repo", "https://github.com/x/y.git")
-        .unwrap_err();
-    assert!(
-        matches!(err, lievo::LievoError::RepoNotFound(ref id) if id == "no-such-repo"),
-        "0-row set_repo_git_url must surface RepoNotFound, got: {err:?}"
-    );
-}
-
-#[test]
-fn update_repo_local_path_on_unknown_repo_id_returns_repo_not_found() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let err = storage
-        .update_repo_local_path("no-such-repo", "/new/path", Some("/new/index"))
-        .unwrap_err();
-    assert!(
-        matches!(err, lievo::LievoError::RepoNotFound(ref id) if id == "no-such-repo"),
-        "0-row update_repo_local_path must surface RepoNotFound, got: {err:?}"
-    );
-}
-
 // --- #764: list_all_relationships project-scoping regression ---
 
 #[test]

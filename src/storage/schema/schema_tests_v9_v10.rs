@@ -4,10 +4,11 @@
 use super::*;
 use tempfile::NamedTempFile;
 
-/// v9-schema repositories table (no unresolved_* columns — v9→v10 adds them).
+/// v9-schema repositories table (no unresolved_* columns — v9→v10 adds them;
+/// git_url present since it was added in the original schema).
 fn create_v9_repositories_table(conn: &Connection) {
     conn.execute(
-        "CREATE TABLE repositories (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, local_path TEXT NOT NULL UNIQUE)",
+        "CREATE TABLE repositories (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, git_url TEXT, local_path TEXT NOT NULL UNIQUE)",
         [],
     )
     .unwrap();
@@ -75,12 +76,13 @@ fn test_migrate_v9_to_v10_adds_null_unresolved_columns() {
     .unwrap();
     assert_eq!(unresolved_columns(&conn), (Some(0), Some(5)));
 
-    // Idempotency: a second migrate() pass over the v10 DB is a no-op.
+    // Idempotency: a second migrate() pass over the v10 DB advances to v11
+    // (creates idx_repos_git_url), not a no-op.
     migrate(&conn).unwrap();
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]
@@ -108,8 +110,10 @@ fn test_fresh_db_repositories_columns_match_upgraded_db() {
 }
 
 /// Issue #31: a v10 database whose `repositories.git_url` is NULL must
-/// open unchanged — `migrate()` is a no-op, the schema version stays 10,
-/// and a NULL `git_url` reads back as `None` (no fabricated default).
+/// open and be upgraded to v11 — the v10→v11 step creates the
+/// `idx_repos_git_url` index (serving FIND_REPOS_BY_GIT_URL without a
+/// full table scan), and a NULL `git_url` reads back as `None`
+/// (no fabricated default).
 #[test]
 fn test_v10_db_null_git_url_opens_unchanged() {
     let tf = NamedTempFile::new().unwrap();
@@ -149,12 +153,26 @@ fn test_v10_db_null_git_url_opens_unchanged() {
     )
     .unwrap();
 
-    // migrate() must be a no-op: user_version already at 10, no DDL runs.
+    // v10 -> v11: the git_url index migration must run and bump the version.
     migrate(&conn).unwrap();
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
+
+    // The v10 -> v11 migration created idx_repos_git_url.
+    let idx_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_repos_git_url'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    assert_eq!(
+        idx_name.as_deref(),
+        Some("idx_repos_git_url"),
+        "v10 -> v11 migration must create idx_repos_git_url"
+    );
 
     // The row's git_url reads back NULL (None), not a fabricated default.
     let git_url: Option<String> = conn

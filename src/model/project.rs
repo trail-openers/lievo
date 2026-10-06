@@ -18,6 +18,9 @@ pub struct Repository {
     pub id: RepoId,
     pub project_id: ProjectId,
     pub name: String,
+    /// The pre-#31 JSON payloads did not serialize this field; `default`
+    /// makes the None-default explicit so old payloads keep deserializing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_url: Option<String>,
     pub local_path: String,
     pub default_branch: String,

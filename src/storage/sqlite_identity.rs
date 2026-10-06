@@ -2,6 +2,7 @@
 // Lives in its own file because sqlite.rs is at the 500-line cap.
 // Mirrors the extraction pattern used by sqlite_ops.rs / sqlite_project.rs.
 
+use crate::LievoError;
 use crate::Result;
 use crate::model::Repository;
 use crate::storage::identity_queries as q;
@@ -47,6 +48,11 @@ pub fn find_repos_by_git_url(conn: &Connection, key: &str) -> Result<Vec<Reposit
 /// canonicality or containment validation, so callers (CLI add_repo, MCP
 /// wiring, config overrides) must canonicalize before the storage call.
 ///
+/// `new_index_path` MUST be `Some`: the documented invariant is that
+/// `local_path` and `index_path` are always coupled — passing `None` would
+/// silently leave a valid `local_path` with a NULL `index_path`, so the
+/// method rejects it as `InvalidInput` rather than corrupting the row.
+///
 /// Returns `LievoError::RepoNotFound` when the repo_id does not match
 /// any row (0 rows affected), matching the `record_unresolved_counts`
 /// and `update_repository_unconfigured_marker` precedent.
@@ -61,6 +67,11 @@ pub fn update_repo_local_path(
     new_index_path: Option<&str>,
     now: &str,
 ) -> Result<()> {
+    let new_index_path = new_index_path.ok_or_else(|| {
+        LievoError::InvalidInput(format!(
+            "update_repo_local_path({repo_id}): new_index_path must be Some to keep local_path/index_path coupled"
+        ))
+    })?;
     let rows = conn.execute(
         q::UPDATE_REPO_LOCAL_PATH,
         (new_path, new_index_path, now, repo_id),

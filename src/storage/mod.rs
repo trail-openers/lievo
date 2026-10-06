@@ -66,11 +66,15 @@ pub trait Storage {
     /// sub-issue 1 for the normalization format); implementations persist it
     /// opaque, with no well-formedness validation.
     ///
-    /// Default is a no-op so test doubles that don't
-    /// model git_url keep compiling; `SqliteStorage` overrides with a real
-    /// UPDATE that returns `LievoError::RepoNotFound` on 0 rows.
+    /// The default returns a typed `InvalidInput` (NOT a silent `Ok(())`)
+    /// so a test double or future implementation that forgets to override
+    /// fails loudly instead of silently dropping the write.
+    /// `SqliteStorage` overrides with a real UPDATE that returns
+    /// `LievoError::RepoNotFound` on 0 rows.
     fn set_repo_git_url(&self, _repo_id: &str, _key: &str) -> crate::Result<()> {
-        Ok(())
+        Err(crate::LievoError::InvalidInput(
+            "set_repo_git_url not implemented by this Storage impl".to_string(),
+        ))
     }
 
     /// Find all repositories registered under a normalized git_url key.
@@ -93,16 +97,20 @@ pub trait Storage {
     /// the old location. This is the ONLY write path that relocates a repo —
     /// `update_repo_index_path` is for initial index setup and never moves
     /// one. `new_path` / `new_index_path` MUST be canonical absolute paths.
-    /// Default is a no-op so test doubles keep
-    /// compiling; `SqliteStorage` overrides with a real UPDATE that
-    /// returns `LievoError::RepoNotFound` on 0 rows.
+    /// The default returns a typed `InvalidInput` (NOT a silent `Ok(())`)
+    /// so a test double or future implementation that forgets to override
+    /// fails loudly instead of silently dropping the write.
+    /// `SqliteStorage` overrides with a real UPDATE that returns
+    /// `LievoError::RepoNotFound` on 0 rows.
     fn update_repo_local_path(
         &self,
         _repo_id: &str,
         _new_path: &str,
         _new_index_path: Option<&str>,
     ) -> crate::Result<()> {
-        Ok(())
+        Err(crate::LievoError::InvalidInput(
+            "update_repo_local_path not implemented by this Storage impl".to_string(),
+        ))
     }
 
     fn update_repo_project(&self, repo_id: &str, project_id: &str) -> crate::Result<()>;
