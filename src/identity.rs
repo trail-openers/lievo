@@ -16,7 +16,7 @@ const SUPPORTED_SCHEMES: [&str; 3] = ["https", "ssh", "git"];
 
 /// Default ports per scheme where an explicit port is redundant and dropped
 /// from the key. Any other port is preserved as a distinguishing part.
-const STANDARD_PORTS: [(&str, u16); 2] = [("https", 443), ("ssh", 22)];
+const STANDARD_PORTS: [(&str, u16); 3] = [("https", 443), ("ssh", 22), ("git", 9418)];
 
 /// Whether `port` is the standard port for `scheme`, i.e. redundant in a key.
 fn is_standard_port(scheme: &str, port: u16) -> bool {
@@ -172,6 +172,7 @@ mod tests {
             // git://
             "git://github.com/owner/repo",
             "git://github.com/owner/repo.git",
+            "git://github.com:9418/owner/repo",
             // uppercase host must lowercase
             "https://GitHub.com/owner/repo",
             "git@GitHub.com:owner/repo",
@@ -219,6 +220,9 @@ mod tests {
         assert_eq!(key, "github.com:2222/owner/repo");
         let key = normalize_origin_url("https://github.com:8443/owner/repo").unwrap();
         assert_eq!(key, "github.com:8443/owner/repo");
+        // 9418 is standard for git://, but a different git:// port is kept.
+        let key = normalize_origin_url("git://github.com:9419/owner/repo").unwrap();
+        assert_eq!(key, "github.com:9419/owner/repo");
     }
 
     #[test]
