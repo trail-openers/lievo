@@ -121,6 +121,13 @@ pub struct RepoConfig {
     /// requests. `None` = the backend's own default budget.
     #[serde(default)]
     pub summarizer_input_char_budget: Option<usize>,
+
+    /// Optional explicit identity key that overrides the one derived from
+    /// the `origin` remote (issue #28, epic #24). Checked before any git
+    /// call; `None` = derive the key from the origin remote, or `None` if
+    /// there is no usable origin.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 /// An explicit subsystem definition with a name and the paths it covers.
@@ -144,6 +151,7 @@ impl Default for RepoConfig {
             summarizer_backend: None,
             summarizer_model: None,
             summarizer_input_char_budget: None,
+            identity: None,
         }
     }
 }
@@ -318,6 +326,27 @@ impl RepoConfig {
                 path: ".lievo/config.yaml".to_string(),
                 reason: "summarizer_input_char_budget must be >= 1".to_string(),
             });
+        }
+
+        // An explicit identity override must name a key (host/owner/repo
+        // shape) — an empty or whitespace-only value would silently produce
+        // a wrong key, so it is a hard error like the other Option<String>
+        // fields (issue #28, epic #24). Dot/empty segments (`..`, `.`,
+        // `a//b`) are path-traversal vectors and are rejected too.
+        if let Some(identity) = &self.identity {
+            let trimmed = identity.trim();
+            if trimmed.is_empty()
+                || trimmed
+                    .split('/')
+                    .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            {
+                return Err(LievoError::InvalidConfig {
+                    path: ".lievo/config.yaml".to_string(),
+                    reason: format!(
+                        "identity '{identity}' must not be empty and must not contain empty, '.' or '..' path segments"
+                    ),
+                });
+            }
         }
 
         Ok(())

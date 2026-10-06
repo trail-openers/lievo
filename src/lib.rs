@@ -11,6 +11,8 @@ pub mod config;
 mod config_tests;
 /// Error types: the LievoError enum, machine-readable ErrorCode, and the crate Result alias.
 pub mod error;
+/// Repository identity: normalized origin-remote identity keys and the `identity:` override (issue #28).
+pub mod identity;
 pub use error::{LievoError, Result};
 /// Top-level Lievo facade: composes the SQLite storage into a single thread-safe entry point.
 pub mod api;
