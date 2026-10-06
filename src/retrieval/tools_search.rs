@@ -101,35 +101,6 @@ impl<S: Storage + Send> Tool for SearchEntitiesTool<S> {
         "search_entities"
     }
 
-    fn description(&self) -> &str {
-        "Search for entities by name or keyword. Set semantic=true to use embedding-based (vector) search (intelligently finds related code even without exact name matches). Falls back to name/path matching if no vector index exists — run 'lievo refresh' to build the index."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Keyword or name fragment to search, e.g. 'auth', 'UserService', 'src/api'. Returns matching entities with their IDs."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results (default 10)"
-                },
-                "semantic": {
-                    "type": "boolean",
-                    "description": "Whether to use embedding-based (vector) search. When true, uses intelligent code search instead of simple name/path matching. Default false."
-                },
-                "tier": {
-                    "type": "string",
-                    "description": "Optional entity tier filter. Valid values: 'function', 'file', 'module', 'subsystem'."
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let query = input
             .get("query")

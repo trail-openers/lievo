@@ -20,24 +20,6 @@ impl<S: Storage + Send> Tool for GetImpactTool<S> {
         "get_impact"
     }
 
-    fn description(&self) -> &str {
-        GET_IMPACT_DESCRIPTION
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "files": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of file paths relative to the repo root",
-                }
-            },
-            "required": ["files"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let files = input
             .get("files")
@@ -289,29 +271,6 @@ impl<S: Storage + Send> Tool for GetHotspotsTool<S> {
         "get_hotspots"
     }
 
-    fn description(&self) -> &str {
-        "Return the highest-complexity entities in the codebase sorted by complexity score. Use to identify risky code, focus refactoring effort, or orient in an unfamiliar codebase."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default: 10, max: 50)",
-                    "default": 10
-                },
-                "tier": {
-                    "type": "string",
-                    "description": "Entity tier to filter by. Valid values: 'file', 'module', 'subsystem'. Default: 'file'.",
-                    "default": "file",
-                    "enum": ["file", "module", "subsystem"]
-                }
-            }
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
         if limit == 0 {
@@ -407,15 +366,6 @@ pub fn resolution_coverage_value(
         Some(_) => serde_json::json!(0.0),
     }
 }
-
-/// The get_impact tool description shared verbatim with the MCP
-/// `#[tool(description = ...)]` attribute at `src/mcp/tools.rs` (issue #840
-/// gap-gate #5: one literal, no drift).
-///
-/// `hop` counts the four dependency edge types (Imports, Calls, DependsOn,
-/// Implements), 0 = direct dependent, 1 = second-hop, consistent with the
-/// blast-radius traversal in `lievo_explore`.
-pub(crate) const GET_IMPACT_DESCRIPTION: &str = "Analyse the impact of changing one or more files. Returns {files, dependents:[{path, hop}], unresolved_imports, resolution_coverage}. Each dependent is a repo-relative path with hop 0 (direct) or 1 (second-hop), counting import, call, depends-on, and implements edges. unresolved_imports/resolution_coverage are null when not recorded; an empty dependents list with unresolved_imports > 0 does NOT mean dead code.";
 
 fn extract_complexity(entity: &crate::model::Entity) -> f64 {
     let json = match entity.metrics_json.as_deref() {

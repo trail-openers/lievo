@@ -22,27 +22,6 @@ impl<S: Storage + Send> Tool for ListDirectoryTool<S> {
         "list_directory"
     }
 
-    fn description(&self) -> &str {
-        "List the files and subdirectories in a directory relative to the repo root. \
-         Returns immediate children only (non-recursive). Subdirectories are shown with a \
-         trailing '/'. Use this to discover what files exist before deciding which ones to \
-         read with read_file. \
-         Input: path (string, relative to repo root, e.g. 'config/initializers')."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to repo root. Use '.' or '' for root."
-                }
-            },
-            "required": ["path"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let path_input = input
             .get("path")
@@ -278,25 +257,6 @@ impl<S: Storage + Send> Tool for ListDirectoryTool<S> {
 impl<S: Storage + Send> Tool for ReadFileTool<S> {
     fn name(&self) -> &str {
         "read_file"
-    }
-
-    fn description(&self) -> &str {
-        "Read the raw source content of a file entity from disk. \
-         Use entity_id from search_entities or list_directory. \
-         Returns raw file content truncated at 32KB."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "Entity ID from search_entities or list_subsystems results."
-                }
-            },
-            "required": ["entity_id"]
-        })
     }
 
     fn call(&self, input: Value) -> crate::Result<String> {

@@ -25,23 +25,6 @@ impl<S: Storage + Send> Tool for GetFunctionTool<S> {
         "get_function"
     }
 
-    fn description(&self) -> &str {
-        "Get detailed information about a function or class entity including source code, signature, what it calls, and what calls it. More token-efficient than read_file for understanding a single function. Use after search_entities to drill into specific functions. If get_function returns an error about missing entities, run 'lievo refresh --force <project>' to re-index."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "Entity ID of function/class tier entity — from search_entities or get_module_details results."
-                }
-            },
-            "required": ["entity_id"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let entity_id = input
             .get("entity_id")
