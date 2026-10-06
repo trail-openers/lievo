@@ -25,6 +25,10 @@ mod sqlite_identity;
 #[cfg(test)]
 mod sqlite_ops_entity_by_path_tests;
 
+#[path = "sqlite_identity_tests.rs"]
+#[cfg(test)]
+mod sqlite_identity_tests;
+
 pub struct SqliteStorage {
     conn: Connection,
 }
