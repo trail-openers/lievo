@@ -446,47 +446,16 @@ fn search_entities_wire_description_describes_embedding_not_treesitter() {
     );
 }
 
-#[test]
-fn search_entities_tool_description_and_schema_describe_embedding_not_treesitter() {
-    // Issue #15: the hand-written SearchEntitiesTool::description() and the
-    // input_schema() semantic property description must also describe the
-    // embedding-based vector search, not the stale tree-sitter phrasing
-    use crate::retrieval::tool_trait::Tool;
-    use crate::retrieval::tools::SearchEntitiesTool;
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let project = storage.create_project("test-project", None).unwrap();
-    let ctx = Arc::new(ToolContext {
-        storage: Arc::new(Mutex::new(storage)),
-        project_id: project.id,
-        repo_path: PathBuf::new(),
-        output_dir: None,
-        zero_repo_guidance: None,
-    });
-    let tool = SearchEntitiesTool { ctx };
-    let desc = tool.description();
-    assert!(
-        !desc.contains("tree-sitter"),
-        "Tool::description must not claim semantic search is tree-sitter based: {desc}"
-    );
-    assert!(
-        desc.contains("embedding"),
-        "Tool::description must describe semantic search as embedding-based: {desc}"
-    );
-
-    let schema = tool.input_schema();
-    let semantic_desc = schema
-        .pointer("/properties/semantic/description")
-        .and_then(|v| v.as_str())
-        .expect("semantic property description must exist in input_schema");
-    assert!(
-        !semantic_desc.contains("tree-sitter"),
-        "semantic property description must not claim tree-sitter based search: {semantic_desc}"
-    );
-    assert!(
-        semantic_desc.contains("embedding"),
-        "semantic property description must be embedding-based: {semantic_desc}"
-    );
-}
+// Issue #15 (workstream b, #22): the former trait-description/schema test
+// `search_entities_tool_description_and_schema_describe_embedding_not_treesitter`
+// was removed when the hand-written `Tool::description()` / `Tool::input_schema()`
+// methods were deleted. The wire-description half (search_entities wire
+// description contains "embedding" and not "tree-sitter") is already guarded by
+// `search_entities_wire_description_describes_embedding_not_treesitter` above.
+// The wire-schema half (semantic property description) could not be re-pointed:
+// the wire `SearchEntitiesParams.semantic` field has no doc-comment, so the
+// schemars-derived schema carries no description for it. The assertion is
+// therefore dropped, not weakened — there is no wire surface to assert on.
 
 #[test]
 fn lievo_explore_wire_description_carrying_call_directives() {

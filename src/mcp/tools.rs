@@ -413,3 +413,7 @@ mod explore_bundle_wire_tests;
 #[cfg(test)]
 #[path = "explore_wire_size_tests.rs"]
 mod explore_wire_size_tests;
+
+#[cfg(test)]
+#[path = "wire_golden_tests.rs"]
+mod wire_golden_tests;

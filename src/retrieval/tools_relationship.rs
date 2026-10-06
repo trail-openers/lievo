@@ -19,23 +19,6 @@ impl<S: Storage + Send> Tool for ListRelationshipsTool<S> {
         "list_relationships"
     }
 
-    fn description(&self) -> &str {
-        "List what an entity depends on and what depends on it. Useful for coupling and impact analysis. Works on any entity type. rel_type values: 'imports' = file or function uses/depends on another file; 'calls' = function calls another function (function-level only); 'contains' = parent owns child (module→file); 'depends_on' = aggregate dependency (module/subsystem tier); 'implements' = implements interface. The response also carries `unresolved_imports` (count of internal imports in the entity's repo that failed resolution; null when not recorded) and `resolution_coverage` (null when unknown). Each edge also carries `provenance` (\"resolved\" or \"heuristic\") — resolved edges come from exact import-resolution or structural grouping; heuristic edges from name/fn-map matching. An empty `depended_by` together with `unresolved_imports > 0` does NOT mean dead code — absence of dependents may reflect unresolved imports."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "Entity ID from search_entities or list_subsystems results."
-                }
-            },
-            "required": ["entity_id"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let entity_id = input
             .get("entity_id")
