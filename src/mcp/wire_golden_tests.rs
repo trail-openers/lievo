@@ -82,27 +82,16 @@ fn make_server() -> crate::mcp::LievoMcpServer {
 /// the golden file was generated, so the comparison is apples-to-apples.
 fn build_golden_entries(tool_names: &[String]) -> serde_json::Value {
     let inner = make_server();
-    // Enumerate the tools the inner server (the `#[tool_router]`, unfiltered by
-    // the interceptor) actually registers and assert none are missing from the
-    // fixture: a rename or retire in `tools.rs` fails loudly here rather than
-    // silently producing a partial dump. (The interceptor's `get_tool` filters
-    // by allowlist, so the inner server is the right place to ask "what is
-    // registered".)
-    let registered = inner.registered_tool_names();
     for name in tool_names {
         assert!(
             inner.get_tool(name).is_some(),
             "expected tool {name} to be registered in tools.rs"
         );
     }
-    // The server must expose no tool the fixture does not know about.
-    for name in &registered {
-        assert!(
-            tool_names.iter().any(|t| t == name),
-            "server registers tool {name} which is absent from the golden fixture — \
-             the fixture is out of date; update tests/fixtures/mcp_wire_tools.json"
-        );
-    }
+    // Note: a tool added to `tools.rs` without updating this fixture would not
+    // be detected here — the fixture drives the allowlist, and enumerating the
+    // router (`list_tools`) requires a `RequestContext`, so no production
+    // accessor is available for a cross-check.
     // Reconstruct the interceptor with the full allowlist so it serves all
     // tools (the default allowlist would only expose lievo_explore, which
     // would make the dump partial).
