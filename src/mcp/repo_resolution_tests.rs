@@ -186,7 +186,7 @@ fn find_repos_by_git_url_finds_checkouts_across_projects() {
     // The same normalized remote can be registered at several local_paths
     // across projects — the lookup must return ALL matching rows.
     let storage = SqliteStorage::open_in_memory().unwrap();
-    let key = "https://github.com/example/shared.git";
+    let key = "github.com/example/shared";
 
     let p1 = storage.create_project("shared-a", None).unwrap();
     let r1 = storage

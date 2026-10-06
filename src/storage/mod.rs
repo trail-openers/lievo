@@ -84,7 +84,9 @@ pub trait Storage {
     ///
     /// Returns a `Vec` (not `Option`) because the same normalized remote can
     /// be registered at several local_paths (checkouts) across projects.
-    /// Default returns an empty vec so test doubles keep compiling.
+    /// Default returns an empty vec so test doubles keep compiling — a read
+    /// with no match is a legitimate empty result, unlike the write defaults,
+    /// which error loudly.
     fn find_repos_by_git_url(&self, _key: &str) -> crate::Result<Vec<Repository>> {
         Ok(Vec::new())
     }

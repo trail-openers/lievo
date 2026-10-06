@@ -32,6 +32,34 @@ fn test_set_repo_git_url_roundtrip() {
     assert_eq!(found[0].id, repo.id);
 }
 
+/// set_repo_git_url rejects an empty (or whitespace-only) key with
+/// InvalidInput before any SQL runs — an empty key would alias every other
+/// empty-key row.
+#[test]
+fn test_set_repo_git_url_rejects_empty_key_with_invalid_input() {
+    use crate::LievoError;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("test", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/path/to/repo1")
+        .unwrap();
+
+    for key in ["", " ", "   "] {
+        let err = storage.set_repo_git_url(&repo.id, key).unwrap_err();
+        assert!(
+            matches!(err, LievoError::InvalidInput(_)),
+            "empty/whitespace key {key:?} must be rejected with InvalidInput, got: {err:?}"
+        );
+    }
+
+    // The row is untouched: no write happened, git_url is still NULL.
+    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(
+        fetched.git_url, None,
+        "git_url must remain unset after rejected writes"
+    );
+}
+
 /// find_repos_by_git_url returns empty Vec when no repo matches (incl. all-NULL git_url).
 #[test]
 fn test_find_repos_by_git_url_empty_when_no_match() {

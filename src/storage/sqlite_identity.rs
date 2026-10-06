@@ -19,6 +19,11 @@ use rusqlite::Connection;
 /// any row (0 rows affected), matching the `record_unresolved_counts`
 /// and `update_repository_unconfigured_marker` precedent.
 pub fn set_repo_git_url(conn: &Connection, repo_id: &str, key: &str, now: &str) -> Result<()> {
+    if key.trim().is_empty() {
+        return Err(crate::LievoError::InvalidInput(format!(
+            "key must be a non-empty normalized git-remote identity, got: {key:?}"
+        )));
+    }
     let rows = conn.execute(q::SET_REPO_GIT_URL, (key, now, repo_id))?;
     if rows == 0 {
         return Err(crate::LievoError::RepoNotFound(repo_id.to_string()));
