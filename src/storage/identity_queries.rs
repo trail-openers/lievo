@@ -11,9 +11,9 @@
 use crate::model::Repository;
 
 /// The 11-column repositories-table projection, in the exact order
-/// `row_to_repo` below maps positionally. Single source of truth: GET_REPO,
-/// LIST_REPOS (queries.rs) and FIND_REPOS_BY_GIT_URL interpolate it, so the
-/// column list and order cannot drift between the three SELECTs.
+/// `row_to_repo` below maps positionally. Kept in sync manually with
+/// GET_REPO / LIST_REPOS (queries.rs) and FIND_REPOS_BY_GIT_URL — the
+/// sentinel test validates positional alignment against this constant.
 pub const REPOS_COLUMNS: &str = "id, project_id, name, git_url, local_path, default_branch, last_analyzed_commit, index_path, created_at, updated_at, summarization_unconfigured";
 
 /// Set the normalized git_url key on a repository row.
@@ -31,12 +31,13 @@ WHERE id = ?3
 /// validates the positional mapping against REPOS_COLUMNS.
 ///
 /// Returns multiple rows because the same normalized remote can be
-/// registered at several local_paths (checkouts).
+/// registered at several local_paths (checkouts). Ordered by creation
+/// time with `id` as a deterministic tiebreak for same-second rows.
 pub const FIND_REPOS_BY_GIT_URL: &str = r#"
 SELECT id, project_id, name, git_url, local_path, default_branch, last_analyzed_commit, index_path, created_at, updated_at, summarization_unconfigured
 FROM repositories
 WHERE git_url = ?1
-ORDER BY created_at ASC
+ORDER BY created_at ASC, id ASC
 "#;
 
 /// Relocate a repository: update both local_path and index_path atomically

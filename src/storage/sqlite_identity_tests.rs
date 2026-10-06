@@ -166,31 +166,28 @@ fn test_update_repo_local_path_unique_constraint_error() {
     assert_eq!(fetched.local_path, "/path/to/repo-a");
 }
 
-/// update_repo_local_path must reject `None` for `new_index_path` to enforce
-/// the documented invariant that `local_path` and `index_path` are always
-/// coupled — a valid `local_path` with a NULL `index_path` is silent state
-/// corruption that downstream code would misread as "index never set".
+/// update_repo_local_path accepts `None` for `new_index_path`, writing NULL
+/// to preserve the NULL state through the move (a fresh repo whose index
+/// has not been built yet can be relocated without fabricating a path).
 #[test]
-fn test_update_repo_local_path_rejects_none_index_path() {
-    use crate::LievoError;
+fn test_update_repo_local_path_none_index_path_writes_null() {
     let storage = SqliteStorage::open_in_memory().unwrap();
     let project = storage.create_project("test", None).unwrap();
     let repo = storage
         .add_repo(&project.id, "repo1", "/path/to/repo1")
         .unwrap();
+    // Fresh repo: index_path is NULL.
+    assert_eq!(repo.index_path, None, "fresh repo has no index_path");
 
-    // Passing None for new_index_path must be rejected as InvalidInput.
-    let result = storage.update_repo_local_path(&repo.id, "/new/path", None);
-    assert!(
-        result.is_err(),
-        "update_repo_local_path must reject None for new_index_path"
-    );
-    assert!(
-        matches!(result.unwrap_err(), LievoError::InvalidInput(_)),
-        "rejection of None new_index_path must surface as InvalidInput"
-    );
+    // Relocate with None: index_path stays NULL, local_path moves.
+    storage
+        .update_repo_local_path(&repo.id, "/new/path", None)
+        .unwrap();
 
-    // The repo's local_path must be unchanged (no partial write).
     let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
-    assert_eq!(fetched.local_path, "/path/to/repo1");
+    assert_eq!(fetched.local_path, "/new/path");
+    assert_eq!(
+        fetched.index_path, None,
+        "None new_index_path must preserve the NULL state"
+    );
 }

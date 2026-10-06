@@ -96,7 +96,10 @@ pub trait Storage {
     /// state leaves `local_path` moved while `index_path` still points at
     /// the old location. This is the ONLY write path that relocates a repo —
     /// `update_repo_index_path` is for initial index setup and never moves
-    /// one. `new_path` / `new_index_path` MUST be canonical absolute paths.
+    /// one. `new_path` MUST be a canonical absolute path. `new_index_path`
+    /// is `None` when the repo has no index yet (writes NULL, preserving
+    /// the NULL state through the move) or `Some(path)` to relocate the
+    /// index alongside the repo.
     /// The default returns a typed `InvalidInput` (NOT a silent `Ok(())`)
     /// so a test double or future implementation that forgets to override
     /// fails loudly instead of silently dropping the write.
