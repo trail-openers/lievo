@@ -124,8 +124,8 @@ pub struct RepoConfig {
 
     /// Optional explicit identity key that overrides the one derived from
     /// the `origin` remote (issue #28, epic #24). Checked before any git
-    /// call; `None` = derive from origin and fall back to the canonical
-    /// path when no origin is present.
+    /// call; `None` = derive the key from the origin remote, or `None` if
+    /// there is no usable origin.
     #[serde(default)]
     pub identity: Option<String>,
 }
@@ -331,14 +331,22 @@ impl RepoConfig {
         // An explicit identity override must name a key (host/owner/repo
         // shape) — an empty or whitespace-only value would silently produce
         // a wrong key, so it is a hard error like the other Option<String>
-        // fields (issue #28, epic #24).
-        if let Some(identity) = &self.identity
-            && identity.trim().is_empty()
-        {
-            return Err(LievoError::InvalidConfig {
-                path: ".lievo/config.yaml".to_string(),
-                reason: "identity must not be empty".to_string(),
-            });
+        // fields (issue #28, epic #24). Dot/empty segments (`..`, `.`,
+        // `a//b`) are path-traversal vectors and are rejected too.
+        if let Some(identity) = &self.identity {
+            let trimmed = identity.trim();
+            if trimmed.is_empty()
+                || trimmed
+                    .split('/')
+                    .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            {
+                return Err(LievoError::InvalidConfig {
+                    path: ".lievo/config.yaml".to_string(),
+                    reason: format!(
+                        "identity '{identity}' must not be empty and must not contain empty, '.' or '..' path segments"
+                    ),
+                });
+            }
         }
 
         Ok(())

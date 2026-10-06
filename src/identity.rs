@@ -28,7 +28,19 @@ fn is_standard_port(scheme: &str, port: u16) -> bool {
 /// Strip a trailing `.git` suffix (and any trailing slashes) from a path.
 fn strip_repo_suffix(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
-    trimmed.strip_suffix(".git").unwrap_or(trimmed)
+    let stripped = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    // If `.git` was the entire last segment (e.g. `owner/.git`), stripping
+    // it leaves a trailing slash (`owner/`); remove that too so the result
+    // is a clean path without dangling separators.
+    stripped.trim_end_matches('/')
+}
+
+/// Whether any `/`-separated segment of `path` is empty, `.` or `..`.
+/// Such segments are path-traversal vectors and must never become part of
+/// an identity key.
+fn has_forbidden_segment(path: &str) -> bool {
+    path.split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
 }
 
 /// Normalize a git origin remote URL into an identity key.
@@ -74,16 +86,19 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
         None => (host_port_raw.as_str(), None),
     };
 
-    if host.is_empty() || path.is_empty() {
+    if host.is_empty() || path.is_empty() || has_forbidden_segment(path.trim_end_matches('/')) {
         return None;
     }
 
     let mut key_host = host.to_ascii_lowercase();
-    if let Some(port) = port
-        && let Ok(port) = port.parse::<u16>()
-        && !is_standard_port(&scheme, port)
-    {
-        key_host = format!("{key_host}:{port}");
+    if let Some(port) = port {
+        // A port that is present but out of range (e.g. `:65536`, `:abc`)
+        // makes the URL unusable as a key — drop it silently only for
+        // standard ports handled below, never for malformed ones.
+        let port = port.parse::<u16>().ok()?;
+        if !is_standard_port(&scheme, port) {
+            key_host = format!("{key_host}:{port}");
+        }
     }
 
     let repo_path = strip_repo_suffix(&path);
@@ -109,7 +124,14 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
     if let Some(override_key) = config.identity.as_deref()
         && !override_key.trim().is_empty()
     {
-        return Some(override_key.trim().to_ascii_lowercase());
+        let key = override_key.trim();
+        // Defensive: a stored override with a traversal or empty segment
+        // must never become an identity key, even though `validate()`
+        // rejects such values at config load.
+        if has_forbidden_segment(key) {
+            return None;
+        }
+        return Some(key.to_ascii_lowercase());
     }
 
     let repo = git2::Repository::open(repo_path).ok()?;
@@ -228,6 +250,34 @@ mod tests {
         assert_eq!(normalize_origin_url("git@github.com:repo"), None);
     }
 
+    #[test]
+    fn test_normalize_origin_url_rejects_dot_segments_and_invalid_ports() {
+        // Path traversal / dot segments are never valid identity keys.
+        for url in [
+            "git@github.com:../../etc/passwd",
+            "https://github.com/../evil/repo",
+            "https://github.com/owner/.git",
+            "ssh://github.com/owner/./repo",
+            "git@github.com:owner//repo",
+        ] {
+            assert!(
+                normalize_origin_url(url).is_none(),
+                "{url:?} must normalize to None"
+            );
+        }
+        // A port that is present but does not parse as u16 is a malformed
+        // URL: the function returns None rather than silently dropping it.
+        for url in [
+            "ssh://github.com:65536/owner/repo",
+            "https://github.com:abc/owner/repo",
+        ] {
+            assert!(
+                normalize_origin_url(url).is_none(),
+                "{url:?} must normalize to None"
+            );
+        }
+    }
+
     // --- derive_identity ---
 
     /// Build a tempdir git repo with an origin remote set to `url`.
@@ -276,6 +326,16 @@ mod tests {
         let config = default_config_with_identity("example.com/override/repo");
         let identity = derive_identity(tmp.path(), &config);
         assert_eq!(identity.as_deref(), Some("example.com/override/repo"));
+    }
+
+    #[test]
+    fn test_derive_identity_override_with_dot_segment_returns_none() {
+        // Defensive: an override that snuck past validation (e.g. written
+        // directly) with a traversal segment must not become a key.
+        let tmp = TempDir::new().unwrap();
+        let config = default_config_with_identity("github.com/../evil/repo");
+        let identity = derive_identity(tmp.path(), &config);
+        assert!(identity.is_none());
     }
 
     #[test]

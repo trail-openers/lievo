@@ -730,13 +730,8 @@ fn test_validate_rejects_empty_identity() {
         identity: Some("".to_string()),
         ..Default::default()
     };
-    let err = config.validate().unwrap_err();
-    match err {
-        LievoError::InvalidConfig { reason, .. } => {
-            assert!(reason.contains("identity"), "got: {reason}");
-        }
-        other => panic!("expected InvalidConfig, got {other:?}"),
-    };
+    let reason = config.validate().unwrap_err().to_string();
+    assert!(reason.contains("identity"), "got: {reason}");
 }
 
 #[test]
@@ -745,13 +740,8 @@ fn test_validate_rejects_whitespace_only_identity() {
         identity: Some("   ".to_string()),
         ..Default::default()
     };
-    let err = config.validate().unwrap_err();
-    match err {
-        LievoError::InvalidConfig { reason, .. } => {
-            assert!(reason.contains("identity"), "got: {reason}");
-        }
-        other => panic!("expected InvalidConfig, got {other:?}"),
-    };
+    let reason = config.validate().unwrap_err().to_string();
+    assert!(reason.contains("identity"), "got: {reason}");
 }
 
 #[test]
@@ -777,21 +767,34 @@ fn test_load_or_default_falls_back_on_invalid_identity() {
 }
 
 #[test]
+fn test_validate_rejects_identity_with_dot_segments() {
+    for bad in ["../../evil/repo", "a//b", "host/a/./b", "host/a/../b"] {
+        let config = RepoConfig {
+            identity: Some(bad.to_string()),
+            ..Default::default()
+        };
+        let reason = config.validate().unwrap_err().to_string();
+        assert!(reason.contains("identity"), "{bad:?}: {reason}");
+    }
+}
+
+#[test]
+fn test_load_or_default_falls_back_on_identity_with_dot_segments() {
+    let tmp = TempDir::new().unwrap();
+    write_config(tmp.path(), "summarize: true\nidentity: ../../evil/repo\n");
+    let config = RepoConfig::load_or_default(tmp.path());
+    assert!(config.summarize.is_none());
+    assert!(config.identity.is_none());
+}
+
+#[test]
 fn test_load_rejects_empty_identity_with_config_path() {
     let tmp = TempDir::new().unwrap();
     write_config(tmp.path(), "identity: ''\n");
-    let err = RepoConfig::load(tmp.path()).unwrap_err();
-    match err {
-        LievoError::InvalidConfig { path, reason } => {
-            assert!(
-                path.contains(".lievo"),
-                "path should mention .lievo: {path}"
-            );
-            assert!(
-                reason.contains("identity"),
-                "reason should mention the field: {reason}"
-            );
-        }
-        other => panic!("expected InvalidConfig, got {other:?}"),
+    let LievoError::InvalidConfig { path, reason } = RepoConfig::load(tmp.path()).unwrap_err()
+    else {
+        panic!("expected InvalidConfig");
     };
+    assert!(path.contains(".lievo"));
+    assert!(reason.contains("identity"));
 }
