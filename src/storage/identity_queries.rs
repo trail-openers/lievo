@@ -1,19 +1,19 @@
 // SQL query constants for repository identity operations (issue #31).
-// Organizing concern: the identity-write statements (git_url, local_path,
-// index_path mutations) have one home here, alongside `REPOS_COLUMNS` — the
-// shared 11-column projection constant the repositories-table SELECTs
-// interpolate. `row_to_repo` is a read-path mapper that is intentionally
-// co-located here for cross-query reuse (GET_REPO / LIST_REPOS in queries.rs
-// call it too), even though this module otherwise owns identity writes.
-// The file lives in its own module (not queries.rs, which is at the 500-line
-// cap) so identity writes and the shared projection constant have one home.
+// Owns the identity-write statements (git_url, local_path, index_path
+// mutations). `REPOS_COLUMNS` is the reference projection that `row_to_repo`
+// maps positionally: FIND_REPOS_BY_GIT_URL uses it, and GET_REPO / LIST_REPOS
+// in queries.rs contain the identical column list (the sentinel test asserts
+// all three copies match). `row_to_repo` is a read-path mapper co-located
+// here for cross-query reuse (queries.rs calls it too), even though this
+// module otherwise owns identity writes.
 
 use crate::model::Repository;
 
-/// The 11-column repositories-table projection, in the exact order
-/// `row_to_repo` below maps positionally. Kept in sync manually with
-/// GET_REPO / LIST_REPOS (queries.rs) and FIND_REPOS_BY_GIT_URL — the
-/// sentinel test validates positional alignment against this constant.
+/// The reference 11-column repositories-table projection, in the exact
+/// order `row_to_repo` below maps positionally. FIND_REPOS_BY_GIT_URL uses
+/// this constant; GET_REPO / LIST_REPOS (queries.rs) and FIND_REPOS_BY_GIT_URL
+/// must stay in sync with it — the sentinel test asserts all three SELECTs
+/// contain this list verbatim, and `row_to_repo` stays aligned positionally.
 pub const REPOS_COLUMNS: &str = "id, project_id, name, git_url, local_path, default_branch, last_analyzed_commit, index_path, created_at, updated_at, summarization_unconfigured";
 
 /// Set the normalized git_url key on a repository row.
@@ -129,5 +129,26 @@ mod tests {
         assert_eq!(repo.created_at, sentinel(8));
         assert_eq!(repo.updated_at, sentinel(9));
         assert_eq!(repo.summarization_unconfigured, Some(sentinel(10)));
+    }
+
+    /// GET_REPO, LIST_REPOS, and FIND_REPOS_BY_GIT_URL must each contain
+    /// REPOS_COLUMNS verbatim as their SELECT projection — guards all three
+    /// copies of the 11-column list against drift.
+    #[test]
+    fn test_queries_contain_repos_columns_verbatim() {
+        use crate::storage::queries;
+        let normalize = |sql: &str| sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (name, sql) in [
+            ("GET_REPO", queries::GET_REPO),
+            ("LIST_REPOS", queries::LIST_REPOS),
+            ("FIND_REPOS_BY_GIT_URL", FIND_REPOS_BY_GIT_URL),
+        ] {
+            let normalized = normalize(sql);
+            let expected = normalize(REPOS_COLUMNS);
+            assert!(
+                normalized.contains(&expected),
+                "{name} must contain REPOS_COLUMNS verbatim; got: {normalized}"
+            );
+        }
     }
 }

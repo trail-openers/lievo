@@ -1,6 +1,7 @@
 // SqliteStorage identity method implementations (issue #31).
-// Lives in its own file because sqlite.rs is at the 500-line cap.
-// Mirrors the extraction pattern used by sqlite_ops.rs / sqlite_project.rs.
+// Groups the identity-related SQLite methods (git_url, local_path,
+// index_path mutations). Mirrors the extraction pattern used by
+// sqlite_ops.rs / sqlite_project.rs.
 
 use crate::Result;
 use crate::model::Repository;
@@ -42,21 +43,23 @@ pub fn find_repos_by_git_url(conn: &Connection, key: &str) -> Result<Vec<Reposit
 /// Relocate a repository: update both local_path and index_path in a
 /// single UPDATE statement so the two columns never diverge.
 ///
-/// Precondition (trust boundary): `new_path` MUST be a canonical absolute
-/// path. `new_index_path` may be `None` (writes NULL) when the repo has no
-/// index yet — the coupling invariant is "if index_path was NULL before the
-/// move, it stays NULL after." `Some` moves the index to the new location.
-/// This method persists them opaque, with no canonicality or containment
-/// validation, so callers (CLI add_repo, MCP wiring, config overrides) must
-/// canonicalize before the storage call.
+/// `new_path` must be non-empty and absolute, and `new_index_path` (when
+/// `Some`) must be non-empty and absolute; otherwise
+/// `LievoError::InvalidInput` is returned before any SQL runs. No
+/// canonicalization or filesystem access happens here.
+///
+/// `new_index_path` may be `None` (writes NULL) when the repo has no index
+/// yet — the coupling invariant is "if index_path was NULL before the move,
+/// it stays NULL after." `Some` moves the index to the new location.
 ///
 /// Returns `LievoError::RepoNotFound` when the repo_id does not match
 /// any row (0 rows affected), matching the `record_unresolved_counts`
 /// and `update_repository_unconfigured_marker` precedent.
 ///
 /// A UNIQUE-constraint violation on local_path (moving to a path already
-/// held by another repo row) is surfaced as a `crate::LievoError` via the
-/// `?` operator — the caller gets an error, not a panic.
+/// held by another repo row) surfaces as `LievoError::Database`, wrapping
+/// rusqlite's constraint-violation error — the caller gets an error, not a
+/// panic.
 pub fn update_repo_local_path(
     conn: &Connection,
     repo_id: &str,
@@ -64,6 +67,18 @@ pub fn update_repo_local_path(
     new_index_path: Option<&str>,
     now: &str,
 ) -> Result<()> {
+    if new_path.is_empty() || !std::path::Path::new(new_path).is_absolute() {
+        return Err(crate::LievoError::InvalidInput(format!(
+            "new_path must be an absolute path, got: {new_path:?}"
+        )));
+    }
+    if let Some(index) = new_index_path
+        && (index.is_empty() || !std::path::Path::new(index).is_absolute())
+    {
+        return Err(crate::LievoError::InvalidInput(format!(
+            "new_index_path must be an absolute path, got: {index:?}"
+        )));
+    }
     let rows = conn.execute(
         q::UPDATE_REPO_LOCAL_PATH,
         (new_path, new_index_path, now, repo_id),

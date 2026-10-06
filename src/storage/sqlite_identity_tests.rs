@@ -1,9 +1,6 @@
-// Issue #31: Storage identity-method tests — set_repo_git_url,
-// find_repos_by_git_url, and update_repo_local_path.
-//
-// Extracted from sqlite_tests.rs so the main test file stays within the
-// 800-line test-file budget (AGENTS.md §5). These are the storage-level
-// identity tests; the MCP-level cross-project lookup lives in
+// Issue #31: storage-level tests for the identity methods —
+// set_repo_git_url, find_repos_by_git_url, and update_repo_local_path.
+// The MCP-level cross-project lookup lives in
 // src/mcp/repo_resolution_tests.rs.
 
 use super::*;
@@ -190,4 +187,68 @@ fn test_update_repo_local_path_none_index_path_writes_null() {
         fetched.index_path, None,
         "None new_index_path must preserve the NULL state"
     );
+}
+
+/// update_repo_local_path rejects a relative new_path with InvalidInput
+/// before touching the database.
+#[test]
+fn test_update_repo_local_path_rejects_relative_new_path() {
+    use crate::LievoError;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("test", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/path/to/repo1")
+        .unwrap();
+
+    let err = storage
+        .update_repo_local_path(&repo.id, "relative/path", None)
+        .unwrap_err();
+    assert!(
+        matches!(err, LievoError::InvalidInput(_)),
+        "relative new_path must be rejected with InvalidInput, got: {err:?}"
+    );
+
+    let err = storage
+        .update_repo_local_path(&repo.id, "", None)
+        .unwrap_err();
+    assert!(
+        matches!(err, LievoError::InvalidInput(_)),
+        "empty new_path must be rejected with InvalidInput, got: {err:?}"
+    );
+
+    // Repo untouched.
+    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(fetched.local_path, "/path/to/repo1");
+}
+
+/// update_repo_local_path rejects a relative (or empty) index path with
+/// InvalidInput before touching the database.
+#[test]
+fn test_update_repo_local_path_rejects_relative_index_path() {
+    use crate::LievoError;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("test", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/path/to/repo1")
+        .unwrap();
+
+    let err = storage
+        .update_repo_local_path(&repo.id, "/abs/path", Some("relative/index"))
+        .unwrap_err();
+    assert!(
+        matches!(err, LievoError::InvalidInput(_)),
+        "relative index path must be rejected with InvalidInput, got: {err:?}"
+    );
+
+    let err = storage
+        .update_repo_local_path(&repo.id, "/abs/path", Some(""))
+        .unwrap_err();
+    assert!(
+        matches!(err, LievoError::InvalidInput(_)),
+        "empty index path must be rejected with InvalidInput, got: {err:?}"
+    );
+
+    // Repo untouched.
+    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(fetched.local_path, "/path/to/repo1");
 }
