@@ -75,35 +75,39 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     assert!(result.is_some(), "analysis should produce a run record");
     let run = result.expect("analysis run should exist");
 
-    // Probe (after): if the hash dir exists it must contain only an empty
-    // `ts-index` directory (skip_semantic_index: true means no files are
-    // written), then we delete exactly that dir.
-    if hash_dir.exists() {
-        let mut entries = std::fs::read_dir(hash_dir)
-            .expect("read fixture hash dir under ~/.lievo/indices")
-            .map(|e| e.expect("hash dir entry").file_name())
-            .collect::<Vec<_>>();
-        entries.sort();
-        assert_eq!(
-            entries,
-            vec!["ts-index"],
-            "hash dir {hash_dir:?} must contain only the ts-index directory, got: {entries:?}"
-        );
-        assert!(
-            ts_index_dir.is_dir(),
-            "expected ts-index at {ts_index_dir:?} to be a directory"
-        );
-        let ts_index_entries = std::fs::read_dir(&ts_index_dir)
-            .expect("read ts-index dir")
-            .count();
-        assert_eq!(
-            ts_index_entries, 0,
-            "ts-index dir {ts_index_dir:?} must be empty (skip_semantic_index: true writes no files)"
-        );
-        std::fs::remove_dir_all(hash_dir).map_err(|e| {
-            format!("remove fixture hash dir {hash_dir:?} under ~/.lievo/indices: {e}")
-        })?;
-    }
+    // Post-run probe (#20): run_repo always creates the hash dir
+    // (TreeSitterExtractor::index runs fs::create_dir_all on
+    // ts_index_dir_for_repo), so the "must not pre-exist" guard above is
+    // paired here with an explicit existence assert. With
+    // skip_semantic_index: true the dir must contain only an empty
+    // `ts-index` directory; delete exactly that dir.
+    assert!(
+        hash_dir.is_dir(),
+        "hash dir {hash_dir:?} must exist after run_repo (issue #20)"
+    );
+    let mut entries = std::fs::read_dir(hash_dir)
+        .expect("read fixture hash dir under ~/.lievo/indices")
+        .map(|e| e.expect("hash dir entry").file_name())
+        .collect::<Vec<_>>();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["ts-index"],
+        "hash dir {hash_dir:?} must contain only the ts-index directory, got: {entries:?}"
+    );
+    assert!(
+        ts_index_dir.is_dir(),
+        "expected ts-index at {ts_index_dir:?} to be a directory"
+    );
+    let ts_index_entries = std::fs::read_dir(&ts_index_dir)
+        .expect("read ts-index dir")
+        .count();
+    assert_eq!(
+        ts_index_entries, 0,
+        "ts-index dir {ts_index_dir:?} must be empty (skip_semantic_index: true writes no files)"
+    );
+    std::fs::remove_dir_all(hash_dir)
+        .map_err(|e| format!("remove fixture hash dir {hash_dir:?} under ~/.lievo/indices: {e}"))?;
 
     assert!(
         run.entities_upserted >= 5,

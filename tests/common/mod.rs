@@ -61,7 +61,7 @@ fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resu
 /// `add-repo` need a real committed working tree.
 pub fn prepare_fixture_repo() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let src = PathBuf::from("tests/fixtures/sample_repo");
-    let tmp = tempfile::TempDir::new().expect("create temp dir for fixture");
+    let tmp = tempfile::TempDir::new().map_err(|e| format!("create temp dir for fixture: {e}"))?;
     let dst = tmp.path().to_path_buf();
     copy_recursive(&src, &dst).map_err(|e| format!("copy fixture {src:?} -> {dst:?}: {e}"))?;
     let git =
