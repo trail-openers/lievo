@@ -31,5 +31,6 @@ lievo/index/
 /tests/fixtures/*
 !/tests/fixtures/sample_repo
 !/tests/fixtures/selfcheck_probes.tsv
+!/tests/fixtures/mcp_wire_tools.json
 /tests/fixtures/cassettes
 .pi/
