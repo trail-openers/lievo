@@ -19,7 +19,6 @@ use crate::mcp::InterceptingMcpServer;
 use crate::mcp::LievoMcpServer;
 use crate::mcp::params::ExploreParams;
 use crate::model::{Entity, EntityTier};
-use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::ToolContext;
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
@@ -197,48 +196,14 @@ fn lievo_explore_schema_exposes_scope_and_offset_as_optional() {
     );
 }
 
-#[test]
-fn lievo_explore_required_fields_do_not_diverge_between_the_two_schemas() {
-    // Round-2 review (cheap guard, in lieu of the larger schema-unification
-    // refactor): `ExploreParams` (rmcp/schemars-derived, `mcp/params.rs`)
-    // and `ExploreTool::input_schema` (hand-written `json!`,
-    // `retrieval/tools_explore.rs`) are two independently authored schemas
-    // for the same wire contract. This test fails the moment their
-    // `required` field sets diverge, without requiring the two to be
-    // generated from one source.
-    let server = make_server_with_repo_path(PathBuf::new());
-    let mcp_tool = server.get_tool("lievo_explore").unwrap();
-    let mcp_required: std::collections::BTreeSet<String> = mcp_tool
-        .input_schema
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|r| r.iter().map(|v| v.as_str().unwrap().to_string()).collect())
-        .unwrap_or_default();
-
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let project = storage.create_project("schema-guard", None).unwrap();
-    let ctx = Arc::new(ToolContext {
-        storage: Arc::new(Mutex::new(storage)),
-        project_id: project.id,
-        repo_path: PathBuf::new(),
-        output_dir: None,
-        zero_repo_guidance: None,
-    });
-    let explore_tool = crate::retrieval::tools::ExploreTool { ctx };
-    let hand_written_required: std::collections::BTreeSet<String> = explore_tool
-        .input_schema()
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|r| r.iter().map(|v| v.as_str().unwrap().to_string()).collect())
-        .unwrap_or_default();
-
-    assert_eq!(
-        mcp_required, hand_written_required,
-        "the rmcp/schemars-derived schema and the hand-written \
-         ExploreTool::input_schema schema must agree on which fields are \
-         required — they diverged; update whichever one is stale"
-    );
-}
+// Issue #22 (workstream b): the former `lievo_explore_required_fields_do_not_diverge_between_the_two_schemas`
+// test was removed when the hand-written `ExploreTool::input_schema` was deleted.
+// Its sole purpose was comparing the two independently-authored schemas
+// (rmcp/schemars vs. hand-written json!) for required-field agreement. With only
+// one schema left (the wire), that comparison has nothing to compare against.
+// The wire-only required-set guarantees are already covered by
+// `lievo_explore_schema_omits_project_path_and_defaults` and
+// `lievo_explore_schema_exposes_scope_and_offset_as_optional` above.
 
 // ---------------------------------------------------------------------------
 // lievo_explore wrapper behavior through the MCP path

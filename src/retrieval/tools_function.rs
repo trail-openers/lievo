@@ -352,9 +352,12 @@ mod tests {
     #[test]
     fn get_function_tool_has_correct_schema() {
         let ctx = make_context(PathBuf::new(), "test-get-function-4");
-        let tool = GetFunctionTool { ctx };
-
-        let schema = tool.input_schema();
+        let server = crate::mcp::LievoMcpServer::new(ctx);
+        use rmcp::handler::server::ServerHandler;
+        let tool = server
+            .get_tool("get_function")
+            .expect("get_function must be registered");
+        let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["entity_id"].is_object());
         assert_eq!(schema["properties"]["entity_id"]["type"], "string");

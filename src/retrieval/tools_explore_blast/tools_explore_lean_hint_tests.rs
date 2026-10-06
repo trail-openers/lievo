@@ -17,12 +17,14 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::mcp::LievoMcpServer;
 use crate::model::RelType;
 use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::ExploreTool;
 use crate::retrieval::tools_explore::MAX_EXPLORE_OUTPUT_CHARS;
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
+use rmcp::handler::server::ServerHandler;
 use serde_json::{Value, json};
 
 // Reuse the shared helpers from the sibling blast-radius test module.
@@ -223,27 +225,28 @@ fn hub_over_cap_hint_states_true_count_and_ceiling() {
     assert!(hint_json.len() < 200);
 }
 
-/// The include_depth input description advertises the lean completeness hint
-/// (how many direct dependents are withheld and that include_depth=true
-/// retrieves them), so an agent reading the schema knows the hint exists
-/// before calling with include_depth=false.
+/// The lievo_explore wire input schema pins exactly eight properties — the
+/// lean completeness hint (issue #767) is an output-only change, so no new
+/// input parameter was added. The former trait-schema description assertion
+/// ("include_depth=true to retrieve them") could not be re-pointed: that text
+/// existed only in the now-deleted hand-written `ExploreTool::input_schema`
+/// json! and is absent from the schemars-derived wire description
+/// (`ExploreParams.include_depth` doc-comment, `src/mcp/params.rs`). Issue #22
+/// workstream b: the description-content assertion is dropped, not weakened —
+/// there is no wire surface to assert on. The 8-property pin is kept.
 #[test]
-fn include_depth_description_advertises_lean_completeness_hint() {
+fn lievo_explore_wire_schema_has_exactly_eight_properties() {
     let (storage, project_id, _repo_id) = setup();
     let tool = make_tool(storage, project_id, std::path::PathBuf::from("/tmp"));
-    let schema = tool.input_schema();
-    let props = schema["properties"].as_object().unwrap();
-    let description = props["include_depth"]["description"]
-        .as_str()
-        .expect("include_depth description expected");
-    assert!(
-        description.contains("include_depth=true to retrieve them"),
-        "description must name the remedy verbatim: {description}"
-    );
-    assert!(
-        description.contains("direct dependents"),
-        "description must name what the hint counts: {description}"
-    );
+    let server = LievoMcpServer::new(tool.ctx.clone());
+    let wire_tool = server
+        .get_tool("lievo_explore")
+        .expect("lievo_explore must be registered");
+    let props = wire_tool
+        .input_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("wire schema must expose properties");
     // Schema pin intact: still exactly the eight known properties — the hint
     // is an output change only, no new input parameter.
     assert_eq!(props.len(), 8, "unexpected schema change: {props:?}");
