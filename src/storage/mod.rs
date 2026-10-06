@@ -1,5 +1,6 @@
 // Storage layer abstraction and implementations
 // Includes: Storage trait, SQLite implementation, schema, queries
+pub mod identity_queries;
 pub mod queries;
 pub mod reconcile;
 pub mod schema;
@@ -53,6 +54,42 @@ pub trait Storage {
         let _ = (repo_id, internal, external);
         Ok(())
     }
+    /// Set the normalized git_url identity key on a repository row.
+    ///
+    /// `key` is the normalized remote URL (see issue #24 sub-issue 1 for the
+    /// normalization format). Default is a no-op so test doubles that don't
+    /// model git_url keep compiling; `SqliteStorage` overrides with a real
+    /// UPDATE that returns `LievoError::RepoNotFound` on 0 rows.
+    fn set_repo_git_url(&self, _repo_id: &str, _key: &str) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// Find all repositories registered under a normalized git_url key.
+    ///
+    /// Returns a `Vec` (not `Option`) because the same normalized remote can
+    /// be registered at several local_paths (checkouts) across projects.
+    /// Default returns an empty vec so test doubles keep compiling.
+    fn find_repos_by_git_url(&self, _key: &str) -> crate::Result<Vec<Repository>> {
+        Ok(Vec::new())
+    }
+
+    /// Relocate a repository: update both `local_path` and `index_path`
+    /// atomically in a single UPDATE statement, plus bump `updated_at`.
+    ///
+    /// The two columns are written in one statement so no intermediate
+    /// state leaves `local_path` moved while `index_path` still points at
+    /// the old location. Default is a no-op so test doubles keep
+    /// compiling; `SqliteStorage` overrides with a real UPDATE that
+    /// returns `LievoError::RepoNotFound` on 0 rows.
+    fn update_repo_local_path(
+        &self,
+        _repo_id: &str,
+        _new_path: &str,
+        _new_index_path: Option<&str>,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
+
     fn update_repo_project(&self, repo_id: &str, project_id: &str) -> crate::Result<()>;
     /// Set the enabled-but-unconfigured marker for a repo to a config
     /// fingerprint (or `None` to clear it). Issue #788: lets `is_stale`

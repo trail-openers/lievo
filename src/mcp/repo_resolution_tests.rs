@@ -176,6 +176,58 @@ fn find_repo_by_path_returns_none_when_no_repo_matches() {
     );
 }
 
+// -- find_repos_by_git_url (issue #31): Vec lookup, cross-project, no-match --
+
+#[test]
+fn find_repos_by_git_url_finds_checkouts_across_projects() {
+    // The same normalized remote can be registered at several local_paths
+    // across projects — the lookup must return ALL matching rows.
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let key = "https://github.com/example/shared.git";
+
+    let p1 = storage.create_project("shared-a", None).unwrap();
+    let r1 = storage
+        .add_repo(&p1.id, "shared-a", "/checkouts/shared-a")
+        .unwrap();
+    storage.set_repo_git_url(&r1.id, key).unwrap();
+
+    let p2 = storage.create_project("shared-b", None).unwrap();
+    let r2 = storage
+        .add_repo(&p2.id, "shared-b", "/checkouts/shared-b")
+        .unwrap();
+    storage.set_repo_git_url(&r2.id, key).unwrap();
+
+    let found = storage.find_repos_by_git_url(key).unwrap();
+    assert_eq!(found.len(), 2, "both checkouts must be returned");
+    let ids: Vec<&str> = found.iter().map(|r| r.id.as_str()).collect();
+    assert!(ids.contains(&r1.id.as_str()));
+    assert!(ids.contains(&r2.id.as_str()));
+}
+
+#[test]
+fn find_repos_by_git_url_returns_empty_for_unmatched_key() {
+    // A key no repo carries — including when every git_url is NULL — must
+    // yield an empty Vec, not an error (NULL git_url rows never match).
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let p = storage.create_project("solo", None).unwrap();
+    let r = storage.add_repo(&p.id, "solo", "/checkouts/solo").unwrap();
+
+    // A repo with no git_url at all (NULL).
+    let by_git_url = storage
+        .find_repos_by_git_url("https://github.com/example/none.git")
+        .unwrap();
+    assert!(by_git_url.is_empty());
+
+    // And after one repo is registered under a key, an unrelated key is empty.
+    storage
+        .set_repo_git_url(&r.id, "https://github.com/example/solo.git")
+        .unwrap();
+    let by_other = storage
+        .find_repos_by_git_url("https://github.com/example/other.git")
+        .unwrap();
+    assert!(by_other.is_empty());
+}
+
 #[test]
 fn unregistered_repo_creates_a_fresh_single_repo_project() {
     let storage = SqliteStorage::open_in_memory().unwrap();
