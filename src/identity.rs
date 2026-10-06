@@ -243,9 +243,10 @@ mod tests {
     }
 
     fn default_config_with_identity(identity: &str) -> RepoConfig {
-        let mut c = RepoConfig::default();
-        c.identity = Some(identity.to_string());
-        c
+        RepoConfig {
+            identity: Some(identity.to_string()),
+            ..Default::default()
+        }
     }
 
     #[test]
