@@ -55,10 +55,6 @@ fn run_session(args: &[Vec<String>]) -> Vec<(String, String, i32)> {
     results
 }
 
-fn fixture_repo() -> PathBuf {
-    common::prepare_fixture_repo()
-}
-
 fn args(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
@@ -172,8 +168,8 @@ fn test_admin_selfcheck_help_documents_flags() {
 
 #[test]
 fn test_selfcheck_pure_sections_pass_on_clean_fixture() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-pure-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
@@ -212,8 +208,8 @@ fn test_selfcheck_pure_sections_pass_on_clean_fixture() {
 /// the in-tree fixture.
 #[test]
 fn test_selfcheck_nested_module_edge_is_not_wrong() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-nested-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
@@ -235,7 +231,7 @@ fn test_selfcheck_nested_module_edge_is_not_wrong() {
     // empty resolved_by_path would also make the gate pass (0.0 rate), so
     // the --gate exit-0 alone is not sufficient proof the fixture is
     // exercising the nested path.
-    let edges = resolved_import_edges_by_path(&repo_path);
+    let edges = resolved_import_edges_by_path(fixture.path());
     assert!(
         edges
             .iter()
@@ -255,8 +251,8 @@ fn test_selfcheck_nested_module_edge_is_not_wrong() {
 /// production extractor does not yet handle — see issue #732).
 #[test]
 fn test_selfcheck_path_module_edge_is_not_wrong() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-path-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
@@ -278,7 +274,7 @@ fn test_selfcheck_path_module_edge_is_not_wrong() {
     // empty resolved_by_path would also make the gate pass (0.0 rate), so
     // the --gate exit-0 alone is not sufficient proof the fixture is
     // exercising the #[path] path.
-    let edges = resolved_import_edges_by_path(&repo_path);
+    let edges = resolved_import_edges_by_path(fixture.path());
     assert!(
         edges
             .iter()
@@ -289,8 +285,8 @@ fn test_selfcheck_path_module_edge_is_not_wrong() {
 
 #[test]
 fn test_selfcheck_gate_fails_on_edge_correctness_breach() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-edge-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     // A negative threshold is impossible to satisfy (wrong_edge_rate is
@@ -339,8 +335,8 @@ fn test_selfcheck_gate_fails_on_edge_correctness_breach() {
 
 #[test]
 fn test_selfcheck_gate_fails_on_false_zero_callers_breach() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-fzc-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     // false_zero_callers is a usize count (can't go negative), so a
@@ -380,8 +376,8 @@ fn test_selfcheck_gate_fails_on_false_zero_callers_breach() {
 
 #[test]
 fn test_selfcheck_json_output_contract() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-json-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
@@ -522,7 +518,13 @@ fn indexed_selfcheck_session(
     probes_content: &str,
     selfcheck_extra: &[&str],
 ) -> (Vec<(String, String, i32)>, PathBuf) {
-    indexed_selfcheck_session_for_repo(project, fixture_repo(), probes_content, selfcheck_extra)
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    indexed_selfcheck_session_for_repo(
+        project,
+        fixture.path().to_path_buf(),
+        probes_content,
+        selfcheck_extra,
+    )
 }
 
 /// Same as [`indexed_selfcheck_session`] but indexes an arbitrary repo path
@@ -759,8 +761,8 @@ fn test_selfcheck_probes_file_hits_lievos_own_tree() {
 
 #[test]
 fn test_selfcheck_probe_sections_skipped_without_project_even_with_probes_file() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let probes_path = std::env::temp_dir().join(format!(
         "lievo-selfcheck-noproj-probes-{}.tsv",
         std::process::id()

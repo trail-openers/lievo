@@ -30,7 +30,8 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     let project = storage.create_project("test-project", Some("Integration test"))?;
 
     // 3. Prepare the pinned fixture repo (temp dir + git init, dropped on cleanup).
-    let repo_path = common::prepare_fixture_repo();
+    let fixture = common::prepare_fixture_repo()?;
+    let repo_path = fixture.path().to_path_buf();
 
     let repo = storage.add_repo(
         &project.id,
@@ -99,7 +100,9 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
             ts_index_entries, 0,
             "ts-index dir {ts_index_dir:?} must be empty (skip_semantic_index: true writes no files)"
         );
-        std::fs::remove_dir_all(hash_dir).expect("remove fixture hash dir under ~/.lievo/indices");
+        std::fs::remove_dir_all(hash_dir).map_err(|e| {
+            format!("remove fixture hash dir {hash_dir:?} under ~/.lievo/indices: {e}")
+        })?;
     }
 
     assert!(

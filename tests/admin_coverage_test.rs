@@ -90,8 +90,8 @@ fn test_admin_coverage_help_shows_project_option() {
 /// isolated project, then run `admin coverage` in the same session.
 /// Returns the three results: create-project, add-repo, coverage.
 fn coverage_session(project: &str, coverage_args: &[&str]) -> Vec<(String, String, i32)> {
-    let repo_path = common::prepare_fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let mut args: Vec<Vec<String>> = Vec::new();
     args.push(vec![
         "admin".to_string(),
