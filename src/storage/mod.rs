@@ -45,6 +45,12 @@ pub trait Storage {
     /// repository row. Written unconditionally by the pipeline — zeros
     /// included, so a fully-resolved fresh index reads as `Some((0, 0))`
     /// rather than `None` (not recorded).
+    ///
+    /// Note: the trait groups identity writes (set_repo_git_url /
+    /// find_repos_by_git_url / update_repo_local_path) here with the
+    /// record_* family, while the SqliteStorage impl groups them with the
+    /// other UPDATE_* methods — the two orderings are intentionally not
+    /// aligned.
     fn record_unresolved_counts(
         &self,
         repo_id: &str,
@@ -56,8 +62,11 @@ pub trait Storage {
     }
     /// Set the normalized git_url identity key on a repository row.
     ///
-    /// `key` is the normalized remote URL (see issue #24 sub-issue 1 for the
-    /// normalization format). Default is a no-op so test doubles that don't
+    /// `key` MUST already be a normalized git-remote identity (see issue #24
+    /// sub-issue 1 for the normalization format); implementations persist it
+    /// opaque, with no well-formedness validation.
+    ///
+    /// Default is a no-op so test doubles that don't
     /// model git_url keep compiling; `SqliteStorage` overrides with a real
     /// UPDATE that returns `LievoError::RepoNotFound` on 0 rows.
     fn set_repo_git_url(&self, _repo_id: &str, _key: &str) -> crate::Result<()> {
@@ -65,6 +74,9 @@ pub trait Storage {
     }
 
     /// Find all repositories registered under a normalized git_url key.
+    ///
+    /// `key` MUST already be a normalized git-remote identity (see issue #24
+    /// sub-issue 1); implementations persist it opaque, with no validation.
     ///
     /// Returns a `Vec` (not `Option`) because the same normalized remote can
     /// be registered at several local_paths (checkouts) across projects.
@@ -78,7 +90,10 @@ pub trait Storage {
     ///
     /// The two columns are written in one statement so no intermediate
     /// state leaves `local_path` moved while `index_path` still points at
-    /// the old location. Default is a no-op so test doubles keep
+    /// the old location. This is the ONLY write path that relocates a repo —
+    /// `update_repo_index_path` is for initial index setup and never moves
+    /// one. `new_path` / `new_index_path` MUST be canonical absolute paths.
+    /// Default is a no-op so test doubles keep
     /// compiling; `SqliteStorage` overrides with a real UPDATE that
     /// returns `LievoError::RepoNotFound` on 0 rows.
     fn update_repo_local_path(

@@ -507,7 +507,7 @@ fn set_repo_git_url_then_find_repos_by_git_url_roundtrips() {
 }
 
 #[test]
-fn find_repos_by_git_url_returns_empty_for_unknown_key() {
+fn find_repos_by_git_url_returns_empty_when_no_repo_carries_the_key() {
     let storage = SqliteStorage::open_in_memory().unwrap();
     let project = storage.create_project("proj", None).unwrap();
     let repo = storage

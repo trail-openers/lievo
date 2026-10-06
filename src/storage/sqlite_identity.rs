@@ -7,7 +7,12 @@ use crate::model::Repository;
 use crate::storage::identity_queries as q;
 use rusqlite::Connection;
 
-/// Set the normalized git_url key on a repository row.
+/// Set the normalized git_url identity key on a repository row.
+///
+/// Precondition (trust boundary): `key` MUST already be a normalized
+/// git-remote identity (see issue #24 sub-issue 1). This method persists it
+/// opaque, with no well-formedness validation, so callers must normalize
+/// before the storage call or identity lookups can alias/miss.
 ///
 /// Returns `LievoError::RepoNotFound` when the repo_id does not match
 /// any row (0 rows affected), matching the `record_unresolved_counts`
@@ -36,6 +41,11 @@ pub fn find_repos_by_git_url(conn: &Connection, key: &str) -> Result<Vec<Reposit
 
 /// Relocate a repository: update both local_path and index_path in a
 /// single UPDATE statement so the two columns never diverge.
+///
+/// Precondition (trust boundary): `new_path` and `new_index_path` MUST be
+/// canonical absolute paths. This method persists them opaque, with no
+/// canonicality or containment validation, so callers (CLI add_repo, MCP
+/// wiring, config overrides) must canonicalize before the storage call.
 ///
 /// Returns `LievoError::RepoNotFound` when the repo_id does not match
 /// any row (0 rows affected), matching the `record_unresolved_counts`

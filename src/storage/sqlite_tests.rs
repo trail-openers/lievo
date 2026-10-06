@@ -771,6 +771,7 @@ fn test_update_repo_local_path_unique_constraint_error() {
     let repo_a = storage
         .add_repo(&project.id, "repo-a", "/path/to/repo-a")
         .unwrap();
+    // repo_b owns /path/to/repo-b — the collision target for the move below.
     let _repo_b = storage
         .add_repo(&project.id, "repo-b", "/path/to/repo-b")
         .unwrap();
