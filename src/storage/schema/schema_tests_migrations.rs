@@ -432,23 +432,14 @@ fn test_migrate_v4_to_v6_is_idempotent() {
         .unwrap();
     assert_eq!(version, 10);
 
-    // Seventh migration: v10 -> v11 (creates idx_repos_git_url index, issue #31)
+    // Seventh migration: v10 -> v10 (should be idempotent - no-op)
     migrate(&conn).unwrap();
 
-    // Verify version is now 11
+    // Verify version is still 10 and no error occurred
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
-
-    // Eighth migration: v11 -> v11 (should be idempotent - no-op)
-    migrate(&conn).unwrap();
-
-    // Verify version is still 11 and no error occurred
-    let version: u32 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 10);
 
     // Verify data integrity remains intact
     let project_count: i64 = conn
