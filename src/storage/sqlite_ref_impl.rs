@@ -48,6 +48,20 @@ impl Storage for &SqliteStorage {
     fn update_repo_project(&self, repo_id: &str, project_id: &str) -> Result<()> {
         (*self).update_repo_project(repo_id, project_id)
     }
+    fn set_repo_git_url(&self, repo_id: &str, key: &str) -> Result<()> {
+        (*self).set_repo_git_url(repo_id, key)
+    }
+    fn find_repos_by_git_url(&self, key: &str) -> Result<Vec<Repository>> {
+        (*self).find_repos_by_git_url(key)
+    }
+    fn update_repo_local_path(
+        &self,
+        repo_id: &str,
+        new_path: &str,
+        new_index_path: Option<&str>,
+    ) -> Result<()> {
+        (*self).update_repo_local_path(repo_id, new_path, new_index_path)
+    }
     fn delete_repo(&self, repo_id: &str) -> Result<crate::storage::DeleteStats> {
         (*self).delete_repo(repo_id)
     }

@@ -482,6 +482,30 @@ fn test_clear_repo_summaries_is_repo_scoped() {
     );
 }
 
+// --- issue #31: repository identity round-trips via the public Storage API ---
+
+#[test]
+fn set_repo_git_url_then_find_repos_by_git_url_roundtrips() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let project = storage.create_project("proj", None).unwrap();
+    let repo = storage
+        .add_repo(&project.id, "repo1", "/path/to/repo1")
+        .unwrap();
+
+    let key = "https://github.com/test/repo1.git";
+    storage.set_repo_git_url(&repo.id, key).unwrap();
+
+    // get_repo reflects the persisted key.
+    let fetched = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(fetched.git_url.as_deref(), Some(key));
+
+    // find_repos_by_git_url returns the repo (cross-project Vec lookup).
+    let found = storage.find_repos_by_git_url(key).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, repo.id);
+    assert_eq!(found[0].git_url.as_deref(), Some(key));
+}
+
 // --- #764: list_all_relationships project-scoping regression ---
 
 #[test]

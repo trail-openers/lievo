@@ -1,5 +1,6 @@
 // Storage layer abstraction and implementations
 // Includes: Storage trait, SQLite implementation, schema, queries
+pub mod identity_queries;
 pub mod queries;
 pub mod reconcile;
 pub mod schema;
@@ -44,6 +45,12 @@ pub trait Storage {
     /// repository row. Written unconditionally by the pipeline — zeros
     /// included, so a fully-resolved fresh index reads as `Some((0, 0))`
     /// rather than `None` (not recorded).
+    ///
+    /// Note: the trait groups identity writes (set_repo_git_url /
+    /// find_repos_by_git_url / update_repo_local_path) here with the
+    /// record_* family, while the SqliteStorage impl groups them with the
+    /// other UPDATE_* methods — the two orderings are intentionally not
+    /// aligned.
     fn record_unresolved_counts(
         &self,
         repo_id: &str,
@@ -53,6 +60,64 @@ pub trait Storage {
         let _ = (repo_id, internal, external);
         Ok(())
     }
+    /// Set the normalized git_url identity key on a repository row.
+    ///
+    /// `key` MUST already be a normalized git-remote identity (see issue #24
+    /// sub-issue 1 for the normalization format); implementations persist it
+    /// opaque, with no well-formedness validation.
+    ///
+    /// The default returns a typed `InvalidInput` (NOT a silent `Ok(())`)
+    /// so a test double or future implementation that forgets to override
+    /// fails loudly instead of silently dropping the write.
+    /// `SqliteStorage` overrides with a real UPDATE that returns
+    /// `LievoError::RepoNotFound` on 0 rows.
+    fn set_repo_git_url(&self, _repo_id: &str, _key: &str) -> crate::Result<()> {
+        Err(crate::LievoError::InvalidInput(
+            "set_repo_git_url not implemented by this Storage impl".to_string(),
+        ))
+    }
+
+    /// Find all repositories registered under a normalized git_url key.
+    ///
+    /// `key` MUST already be a normalized git-remote identity (see issue #24
+    /// sub-issue 1); implementations persist it opaque, with no validation.
+    ///
+    /// Returns a `Vec` (not `Option`) because the same normalized remote can
+    /// be registered at several local_paths (checkouts) across projects.
+    /// Default returns an empty vec so test doubles keep compiling — a read
+    /// with no match is a legitimate empty result, unlike the write defaults,
+    /// which error loudly.
+    fn find_repos_by_git_url(&self, _key: &str) -> crate::Result<Vec<Repository>> {
+        Ok(Vec::new())
+    }
+
+    /// Relocate a repository: update both `local_path` and `index_path`
+    /// atomically in a single UPDATE statement, plus bump `updated_at`.
+    ///
+    /// The two columns are written in one statement so no intermediate
+    /// state leaves `local_path` moved while `index_path` still points at
+    /// the old location. This is the ONLY write path that relocates a repo —
+    /// `update_repo_index_path` is for initial index setup and never moves
+    /// one. `new_path` MUST be a canonical absolute path. `new_index_path`
+    /// is `None` when the repo has no index yet (writes NULL, preserving
+    /// the NULL state through the move) or `Some(path)` to relocate the
+    /// index alongside the repo.
+    /// The default returns a typed `InvalidInput` (NOT a silent `Ok(())`)
+    /// so a test double or future implementation that forgets to override
+    /// fails loudly instead of silently dropping the write.
+    /// `SqliteStorage` overrides with a real UPDATE that returns
+    /// `LievoError::RepoNotFound` on 0 rows.
+    fn update_repo_local_path(
+        &self,
+        _repo_id: &str,
+        _new_path: &str,
+        _new_index_path: Option<&str>,
+    ) -> crate::Result<()> {
+        Err(crate::LievoError::InvalidInput(
+            "update_repo_local_path not implemented by this Storage impl".to_string(),
+        ))
+    }
+
     fn update_repo_project(&self, repo_id: &str, project_id: &str) -> crate::Result<()>;
     /// Set the enabled-but-unconfigured marker for a repo to a config
     /// fingerprint (or `None` to clear it). Issue #788: lets `is_stale`

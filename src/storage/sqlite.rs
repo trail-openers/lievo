@@ -18,9 +18,16 @@ mod sqlite_delete;
 #[path = "sqlite_project.rs"]
 mod sqlite_project;
 
+#[path = "sqlite_identity.rs"]
+mod sqlite_identity;
+
 #[path = "sqlite_ops_entity_by_path_tests.rs"]
 #[cfg(test)]
 mod sqlite_ops_entity_by_path_tests;
+
+#[path = "sqlite_identity_tests.rs"]
+#[cfg(test)]
+mod sqlite_identity_tests;
 
 pub struct SqliteStorage {
     conn: Connection,
@@ -144,40 +151,14 @@ impl Storage for SqliteStorage {
         let mut stmt = self.conn.prepare_cached(q::GET_REPO)?;
         let mut rows = stmt.query([repo_id])?;
         match rows.next()? {
-            Some(row) => Ok(Some(Repository {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                name: row.get(2)?,
-                git_url: row.get(3)?,
-                local_path: row.get(4)?,
-                default_branch: row.get(5)?,
-                last_analyzed_commit: row.get(6)?,
-                index_path: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-                summarization_unconfigured: row.get(10)?,
-            })),
+            Some(row) => Ok(Some(crate::storage::identity_queries::row_to_repo(row)?)),
             None => Ok(None),
         }
     }
 
     fn list_repos(&self, project_id: &str) -> Result<Vec<Repository>> {
         let mut stmt = self.conn.prepare_cached(q::LIST_REPOS)?;
-        let rows = stmt.query_map([project_id], |row| {
-            Ok(Repository {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                name: row.get(2)?,
-                git_url: row.get(3)?,
-                local_path: row.get(4)?,
-                default_branch: row.get(5)?,
-                last_analyzed_commit: row.get(6)?,
-                index_path: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-                summarization_unconfigured: row.get(10)?,
-            })
-        })?;
+        let rows = stmt.query_map([project_id], crate::storage::identity_queries::row_to_repo)?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -209,6 +190,24 @@ impl Storage for SqliteStorage {
             return Err(crate::LievoError::RepoNotFound(repo_id.to_string()));
         }
         Ok(())
+    }
+
+    fn set_repo_git_url(&self, repo_id: &str, key: &str) -> Result<()> {
+        sqlite_identity::set_repo_git_url(&self.conn, repo_id, key, &Self::now())
+    }
+
+    fn find_repos_by_git_url(&self, key: &str) -> Result<Vec<Repository>> {
+        sqlite_identity::find_repos_by_git_url(&self.conn, key)
+    }
+
+    fn update_repo_local_path(
+        &self,
+        repo_id: &str,
+        new_path: &str,
+        new_index_path: Option<&str>,
+    ) -> Result<()> {
+        let now = Self::now();
+        sqlite_identity::update_repo_local_path(&self.conn, repo_id, new_path, new_index_path, &now)
     }
 
     fn update_repository_unconfigured_marker(
