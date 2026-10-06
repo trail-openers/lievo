@@ -6,83 +6,20 @@
 // semantic index are both off (no_summarize: true, skip_semantic_index: true),
 // so the test never runs a summarizer and never downloads the embedding
 // model, regardless of what is installed on the host (e.g. apfel on PATH).
-// It uses in-memory storage. A before/after entry-set probe verifies the
-// only side effect on the developer's real ~/.lievo/indices is the empty
-// ts-index dir skeleton (cleaned up by the test itself).
+// It uses in-memory storage. A scoped probe verifies the only side effect on
+// the developer's real ~/.lievo/indices is the empty ts-index dir skeleton
+// for the fixture's own hash (cleaned up by the test itself); no other entry
+// under ~/.lievo/indices is read, asserted on, or touched.
 //
 // Decision (#809): this test RUNS in the main CI job (blocking, every push/PR)
 // and is cheap (seconds, not minutes).
-use std::collections::BTreeSet;
-use std::path::PathBuf;
-
 use lievo::analysis::pipeline::{AnalysisPipeline, PipelineConfig, ReindexMode};
+use lievo::extraction::ts_index_dir_for_repo;
 use lievo::query::{dependency, entity_queries};
 use lievo::storage::Storage;
 use lievo::storage::sqlite::SqliteStorage;
 
-/// Resolve the developer's real ~/.lievo/indices directory, if a home dir exists.
-fn lievo_indices_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".lievo").join("indices"))
-}
-
-/// Entry set under the indices directory (empty if absent — the test never
-/// *creates* the directory itself, only observes entries in it).
-fn indices_entries(indices_dir: &std::path::Path) -> BTreeSet<String> {
-    std::fs::read_dir(indices_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect()
-}
-
-/// Copy tests/fixtures/sample_repo into a fresh temp dir and git-init it (the
-/// in-tree copy has no .git; analysis needs a real committed working tree for
-/// head_commit tracking). Returns a TempDir so cleanup happens on drop.
-fn prepare_fixture_repo() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
-    let src = PathBuf::from("tests/fixtures/sample_repo");
-    let tmp = tempfile::TempDir::new()?;
-    let dst = tmp.path().to_path_buf();
-
-    // Recursive copy of the fixture.
-    fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let target = dst.join(entry.file_name());
-            if entry.file_type()?.is_dir() {
-                std::fs::create_dir_all(&target)?;
-                copy_recursive(&entry.path(), &target)?;
-            } else {
-                std::fs::copy(entry.path(), &target)?;
-            }
-        }
-        Ok(())
-    }
-    copy_recursive(&src, &dst).map_err(|e| format!("failed to copy fixture: {e}"))?;
-
-    // git2: init + single commit on refs/heads/main (matches the CI step).
-    let git = git2::Repository::init(&dst).map_err(|e| format!("git init on fixture copy: {e}"))?;
-    // `git2::Repository::init` may default HEAD to `refs/heads/master`
-    // regardless of init.defaultBranch; pin it to main before the commit
-    // (see tests/admin_selfcheck_test.rs for the same pin, issue #715).
-    git.set_head("refs/heads/main")
-        .map_err(|e| format!("point HEAD at refs/heads/main: {e}"))?;
-    let mut index = git.index().map_err(|e| format!("open git index: {e}"))?;
-    index
-        .add_all(["**"], git2::IndexAddOption::DEFAULT, None)
-        .map_err(|e| format!("stage fixture files: {e}"))?;
-    index.write().map_err(|e| format!("write git index: {e}"))?;
-    let tree_oid = index.write_tree().map_err(|e| format!("write tree: {e}"))?;
-    let tree = git
-        .find_tree(tree_oid)
-        .map_err(|e| format!("find tree: {e}"))?;
-    let sig =
-        git2::Signature::now("lievo-test", "lievo@test").map_err(|e| format!("signature: {e}"))?;
-    git.commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &[])
-        .map_err(|e| format!("commit fixture: {e}"))?;
-
-    Ok(tmp)
-}
+pub mod common;
 
 #[test]
 fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,8 +30,7 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
     let project = storage.create_project("test-project", Some("Integration test"))?;
 
     // 3. Prepare the pinned fixture repo (temp dir + git init, dropped on cleanup).
-    let fixture_dir = prepare_fixture_repo()?;
-    let repo_path = fixture_dir.path().to_path_buf();
+    let repo_path = common::prepare_fixture_repo();
 
     let repo = storage.add_repo(
         &project.id,
@@ -114,58 +50,56 @@ fn test_full_analyze_and_query_cycle() -> Result<(), Box<dyn std::error::Error>>
         skip_semantic_index: true,
     };
 
-    // Probe (before): entry set of the developer's real ~/.lievo/indices. The
-    // test must not grow this set — any new entry after the analyze call is a
-    // regression in hermeticity (e.g. ts_index_dir_for_repo writing to home).
-    // Note: `skip_semantic_index: true` does NOT stop the ts-index dir —
-    // TreeSitterExtractor::index unconditionally runs
-    // fs::create_dir_all(ts_index_dir_for_repo(...)). We assert the new hash
-    // directory is empty after the test (no files written), and then clean
-    // it up so the probe stays hermetic for re-runs.
-    let indices_dir = lievo_indices_dir();
-    let entries_before: BTreeSet<String> = indices_dir
-        .as_deref()
-        .map(indices_entries)
-        .unwrap_or_default();
+    // Scoped probe: the pipeline unconditionally creates
+    // ~/.lievo/indices/<fixture-hash>/ts-index (TreeSitterExtractor::index
+    // runs fs::create_dir_all on ts_index_dir_for_repo), so we verify that
+    // hash dir is the only side effect and clean it up. The temp path is new,
+    // so the hash dir must not already exist; if it does, something is wrong
+    // and we fail rather than touching it.
+    let ts_index_dir =
+        ts_index_dir_for_repo(&repo_path).map_err(|e| format!("ts_index_dir_for_repo: {e}"))?;
+    let hash_dir = ts_index_dir
+        .parent()
+        .ok_or("ts-index dir has no parent (unexpected)")?;
+
+    if hash_dir.exists() {
+        return Err(format!(
+            "hash dir {hash_dir:?} already exists before the analyze call; \
+             the temp fixture path should be new — refusing to touch it"
+        )
+        .into());
+    }
 
     let result = AnalysisPipeline::run_repo(&storage, &repos[0], &config)?;
     assert!(result.is_some(), "analysis should produce a run record");
     let run = result.expect("analysis run should exist");
 
-    // Probe (after): if a new entry appeared under ~/.lievo/indices, it must
-    // be only the ts-index dir skeleton (an empty `ts-index` subdirectory with
-    // no files inside — skip_semantic_index: true means no semantic index is
-    // built, so no files are written). Any file written inside is a
-    // regression; assert and clean up the skeleton so re-runs stay hermetic.
-    let entries_after = indices_dir
-        .as_deref()
-        .map(indices_entries)
-        .unwrap_or_default();
-    let new_entries: Vec<String> = entries_after.difference(&entries_before).cloned().collect();
-    if let Some(indices_dir) = indices_dir.as_ref()
-        && !new_entries.is_empty()
-    {
-        for entry in &new_entries {
-            let subdir = indices_dir.join(entry);
-            // Expected shape: subdir/ts-index (an empty directory skeleton).
-            // No files at any level, no unexpected sibling directories.
-            let expected_skeleton = subdir.join("ts-index");
-            let skeleton_exists = expected_skeleton.is_dir();
-            let skeleton_is_empty = skeleton_exists
-                && std::fs::read_dir(&expected_skeleton)
-                    .map(|entries| entries.count() == 0)
-                    .unwrap_or(false);
-            assert!(
-                skeleton_exists && skeleton_is_empty,
-                "new entry {:?} under ~/.lievo/indices must be only the empty ts-index skeleton, \
-                 got: exists={}, empty={}",
-                subdir,
-                skeleton_exists,
-                skeleton_is_empty
-            );
-            // Clean up the skeleton so the developer's ~/.lievo stays pristine.
-            let _ = std::fs::remove_dir_all(&subdir);
-        }
+    // Probe (after): if the hash dir exists it must contain only an empty
+    // `ts-index` directory (skip_semantic_index: true means no files are
+    // written), then we delete exactly that dir.
+    if hash_dir.exists() {
+        let mut entries = std::fs::read_dir(hash_dir)
+            .expect("read fixture hash dir under ~/.lievo/indices")
+            .map(|e| e.expect("hash dir entry").file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["ts-index"],
+            "hash dir {hash_dir:?} must contain only the ts-index directory, got: {entries:?}"
+        );
+        assert!(
+            ts_index_dir.is_dir(),
+            "expected ts-index at {ts_index_dir:?} to be a directory"
+        );
+        let ts_index_entries = std::fs::read_dir(&ts_index_dir)
+            .expect("read ts-index dir")
+            .count();
+        assert_eq!(
+            ts_index_entries, 0,
+            "ts-index dir {ts_index_dir:?} must be empty (skip_semantic_index: true writes no files)"
+        );
+        std::fs::remove_dir_all(hash_dir).expect("remove fixture hash dir under ~/.lievo/indices");
     }
 
     assert!(
