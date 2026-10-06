@@ -697,3 +697,101 @@ fn test_load_or_default_falls_back_on_corrupt_yaml() {
     let config = RepoConfig::load_or_default(tmp.path());
     assert!(config.subsystems.is_empty());
 }
+
+// --- identity (issue #28) ---
+
+#[test]
+fn test_identity_defaults_to_none() {
+    assert!(RepoConfig::default().identity.is_none());
+}
+
+#[test]
+fn test_load_identity_persists_value() {
+    let tmp = TempDir::new().unwrap();
+    write_config(
+        tmp.path(),
+        "summarize: true\nidentity: example.com/owner/repo\n",
+    );
+    let config = RepoConfig::load(tmp.path()).unwrap().unwrap();
+    assert_eq!(config.identity.as_deref(), Some("example.com/owner/repo"));
+}
+
+#[test]
+fn test_load_identity_omitted_falls_back_to_none() {
+    let tmp = TempDir::new().unwrap();
+    write_config(tmp.path(), "summarize: true\n");
+    let config = RepoConfig::load(tmp.path()).unwrap().unwrap();
+    assert!(config.identity.is_none());
+}
+
+#[test]
+fn test_validate_rejects_empty_identity() {
+    let config = RepoConfig {
+        identity: Some("".to_string()),
+        ..Default::default()
+    };
+    let err = config.validate().unwrap_err();
+    match err {
+        LievoError::InvalidConfig { reason, .. } => {
+            assert!(reason.contains("identity"), "got: {reason}");
+        }
+        other => panic!("expected InvalidConfig, got {other:?}"),
+    };
+}
+
+#[test]
+fn test_validate_rejects_whitespace_only_identity() {
+    let config = RepoConfig {
+        identity: Some("   ".to_string()),
+        ..Default::default()
+    };
+    let err = config.validate().unwrap_err();
+    match err {
+        LievoError::InvalidConfig { reason, .. } => {
+            assert!(reason.contains("identity"), "got: {reason}");
+        }
+        other => panic!("expected InvalidConfig, got {other:?}"),
+    };
+}
+
+#[test]
+fn test_validate_accepts_valid_identity() {
+    let config = RepoConfig {
+        identity: Some("github.com/owner/repo".to_string()),
+        ..Default::default()
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn test_load_or_default_falls_back_on_invalid_identity() {
+    // Empty identity → validate() fails → load_or_default warns and returns
+    // defaults (same contract as summarizer_backend; issue #788/#28).
+    let tmp = TempDir::new().unwrap();
+    write_config(tmp.path(), "summarize: true\nidentity: ''\n");
+    let config = RepoConfig::load_or_default(tmp.path());
+    // Defaults: summarize is None (not Some(true) from the bad file) and
+    // identity is None (not the empty string from the bad file).
+    assert!(config.summarize.is_none());
+    assert!(config.identity.is_none());
+}
+
+#[test]
+fn test_load_rejects_empty_identity_with_config_path() {
+    let tmp = TempDir::new().unwrap();
+    write_config(tmp.path(), "identity: ''\n");
+    let err = RepoConfig::load(tmp.path()).unwrap_err();
+    match err {
+        LievoError::InvalidConfig { path, reason } => {
+            assert!(
+                path.contains(".lievo"),
+                "path should mention .lievo: {path}"
+            );
+            assert!(
+                reason.contains("identity"),
+                "reason should mention the field: {reason}"
+            );
+        }
+        other => panic!("expected InvalidConfig, got {other:?}"),
+    };
+}
