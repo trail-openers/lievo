@@ -440,3 +440,74 @@ fn test_delete_repo_command_name_collision() {
     let repos = s.list_repos(&proj.id).unwrap();
     assert_eq!(repos.len(), 2);
 }
+
+/// CLI explicit project name that is taken by a DIFFERENT identity exits
+/// non-zero with a clear error distinct from idempotent "already registered
+/// here" success (issue #29).
+#[test]
+fn test_add_repo_handler_explicit_project_taken_by_different_identity_fails() {
+    use lievo::LievoError;
+    let s = storage();
+    // Create a project with a repo that has a specific identity.
+    let proj = s.create_project("conflict-proj", None).unwrap();
+    let dir1 = git_dir();
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+    s.set_repo_git_url(&repo1.id, "github.com/owner-a/repo")
+        .unwrap();
+
+    // New repo with a DIFFERENT identity at a different path.
+    let dir2 = git_dir();
+    // Set a different origin remote so the derived identity differs.
+    let git2 = git2::Repository::open(dir2.path()).unwrap();
+    git2.config()
+        .unwrap()
+        .set_str("remote.origin.url", "https://github.com/owner-b/other")
+        .unwrap();
+
+    let result = add_repo(&s, dir2.path(), Some("conflict-proj"));
+    // Must fail with InvalidInput (identity conflict), not succeed.
+    let err =
+        result.expect_err("must fail when explicit project name is taken by a different identity");
+    match err {
+        LievoError::InvalidInput(msg) => {
+            assert!(
+                msg.contains("identity conflict"),
+                "error must mention identity conflict: {msg}"
+            );
+            assert!(
+                msg.contains("conflict-proj"),
+                "error must name the project: {msg}"
+            );
+        }
+        other => panic!("expected InvalidInput, got {:?}", other),
+    }
+}
+
+/// CLI explicit project name with a NULL-identity existing repo does NOT
+/// conflict (finding 1 fix: NULL identity is not "a different identity").
+#[test]
+fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
+    let s = storage();
+    // Create a project with a repo that has NULL git_url (no identity).
+    let proj = s.create_project("null-identity-proj", None).unwrap();
+    let dir1 = git_dir();
+    s.add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+
+    // New repo WITH an identity at a different path.
+    let dir2 = git_dir();
+    let git2 = git2::Repository::open(dir2.path()).unwrap();
+    git2.config()
+        .unwrap()
+        .set_str("remote.origin.url", "https://github.com/owner-a/repo")
+        .unwrap();
+
+    // Must succeed: NULL identity is not "a different identity".
+    add_repo(&s, dir2.path(), Some("null-identity-proj")).unwrap();
+
+    // The repo was added to the existing project.
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1, "must not create a duplicate project");
+}

@@ -128,7 +128,11 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         let derived = derive_identity(&canonical, &RepoConfig::default());
         let conflicting = repos.iter().any(|r| {
             let stored = Path::new(&r.local_path);
-            !is_same_path(stored, &canonical) && r.git_url.as_deref() != derived.as_deref()
+            !is_same_path(stored, &canonical)
+                && r.git_url
+                    .as_deref()
+                    .zip(derived.as_deref())
+                    .is_some_and(|(a, b)| a != b)
         });
         if conflicting {
             return Err(LievoError::InvalidInput(format!(

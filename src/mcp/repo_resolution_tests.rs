@@ -14,6 +14,21 @@ fn git_tempdir(name: &str) -> TempDir {
     git2::Repository::init(dir.path().join(name)).unwrap();
     dir
 }
+
+/// Create a temp git repo with an origin remote set to the given URL.
+fn git_tempdir_with_remote(name: &str, remote_url: &str) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(name);
+    std::fs::create_dir_all(&path).unwrap();
+    let repo = git2::Repository::init(&path).unwrap();
+    if !remote_url.is_empty() {
+        repo.config()
+            .unwrap()
+            .set_str("remote.origin.url", remote_url)
+            .unwrap();
+    }
+    dir
+}
 /// Take the crate-wide env lock (serialises LIEVO_PROJECT_DIR/CLAUDE_PROJECT_DIR
 /// mutations against every other env-mutating test in the crate — issue #863).
 fn with_env(lievo_project_dir: Option<&str>, claude_project_dir: Option<&str>, f: impl FnOnce()) {
@@ -503,4 +518,219 @@ fn resolve_project_root_matches_resolve_project_root_from_cwd() {
         std::env::set_current_dir(old).unwrap();
         assert_eq!(from_cwd, explicit, "both entry points must agree on cwd");
     });
+}
+
+// -- Issue #29: identity-bearing registration tests --
+
+/// Two same-name dirs with DIFFERENT identities register as "twin" and an
+/// owner-prefixed name (owner/repo), not a -2 suffix.
+#[test]
+fn same_directory_name_with_different_identities_gets_distinct_projects() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d1 = git_tempdir_with_remote("twin", "https://github.com/owner-a/twin");
+    let d2 = git_tempdir_with_remote("twin", "https://github.com/owner-b/twin");
+    let r1 = d1.path().join("twin");
+    let r2 = d2.path().join("twin");
+
+    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
+    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
+
+    assert_ne!(first.project.id, second.project.id);
+    assert_eq!(first.project.name, "twin");
+    // Second registration: "twin" is taken by a different identity, so it
+    // gets an owner-prefixed name, not "twin-2".
+    assert_eq!(second.project.name, "owner-b/twin");
+    assert_eq!(storage.list_projects().unwrap().len(), 2);
+}
+
+/// Collision suffixing for no-identity repos still works (regression anchor).
+#[test]
+fn no_identity_collision_suffix_still_works() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let (d1, d2, d3) = (git_tempdir("dup"), git_tempdir("dup"), git_tempdir("dup"));
+    let r1 = d1.path().join("dup");
+    let r2 = d2.path().join("dup");
+    let r3 = d3.path().join("dup");
+
+    let a = resolve_or_register(&storage, r1.as_path()).unwrap();
+    let b = resolve_or_register(&storage, r2.as_path()).unwrap();
+    let c = resolve_or_register(&storage, r3.as_path()).unwrap();
+
+    assert_eq!(
+        (
+            a.project.name.as_str(),
+            b.project.name.as_str(),
+            c.project.name.as_str()
+        ),
+        ("dup", "dup-2", "dup-3")
+    );
+}
+
+/// A path match against a row with NULL git_url backfills git_url.
+#[test]
+fn path_match_backfills_null_git_url() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d = git_tempdir_with_remote("backfill", "https://github.com/owner/backfill");
+    let root = d.path().join("backfill");
+
+    // Register a project with a repo at this path but with NULL git_url.
+    let p = storage.create_project("backfill", None).unwrap();
+    let repo = storage
+        .add_repo(&p.id, "backfill", root.to_str().unwrap())
+        .unwrap();
+    assert_eq!(repo.git_url, None);
+
+    // resolve_or_register should find the path match and backfill git_url.
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(resolved.project.id, p.id);
+
+    // git_url should now be populated.
+    let updated = storage.get_repo(&resolved.repo.id).unwrap().unwrap();
+    assert_eq!(
+        updated.git_url.as_deref(),
+        Some("github.com/owner/backfill"),
+        "git_url must be backfilled from the derived identity"
+    );
+}
+
+/// When backfilling git_url would collide with another repo's identity, path
+/// match wins — no merge, no move, both rows remain.
+#[test]
+fn backfill_collision_path_match_wins_no_merge() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let key = "github.com/owner/shared";
+
+    // First repo: owns the identity, at a live path.
+    let d1 = git_tempdir_with_remote("shared", "https://github.com/owner/shared");
+    let root1 = d1.path().join("shared");
+    let p1 = storage.create_project("shared-a", None).unwrap();
+    let r1 = storage
+        .add_repo(&p1.id, "shared-a", root1.to_str().unwrap())
+        .unwrap();
+    storage.set_repo_git_url(&r1.id, key).unwrap();
+
+    // Second repo: at a DIFFERENT path, same derived identity, but stored with
+    // NULL git_url in a different project.
+    let d2 = git_tempdir_with_remote("shared-2", "https://github.com/owner/shared");
+    let root2 = d2.path().join("shared-2");
+    let p2 = storage.create_project("shared-b", None).unwrap();
+    let r2 = storage
+        .add_repo(&p2.id, "shared-b", root2.to_str().unwrap())
+        .unwrap();
+    assert_eq!(r2.git_url, None);
+
+    // Resolve root2: path match finds it in project "shared-b".
+    let resolved = resolve_or_register(&storage, root2.as_path()).unwrap();
+    assert_eq!(
+        resolved.project.id, p2.id,
+        "path match must return the same project"
+    );
+
+    // git_url stays NULL (no backfill because the key is already owned).
+    let updated = storage.get_repo(&r2.id).unwrap().unwrap();
+    assert_eq!(
+        updated.git_url, None,
+        "git_url must NOT be backfilled when the key belongs to another repo"
+    );
+
+    // Both repos still exist in their respective projects.
+    assert_eq!(storage.list_repos(&p1.id).unwrap().len(), 1);
+    assert_eq!(storage.list_repos(&p2.id).unwrap().len(), 1);
+}
+
+/// A changed origin on a live repo does not re-key: only the stored git_url
+/// governs identity, so resolving by path leaves the stored identity untouched.
+#[test]
+fn changed_origin_does_not_rekey_stored_identity() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    // Repo with on-disk origin "github.com/owner/new" but stored git_url
+    // "github.com/owner/old".
+    let d = git_tempdir_with_remote("rekey", "https://github.com/owner/new");
+    let root = d.path().join("rekey");
+    let p = storage.create_project("rekey", None).unwrap();
+    let repo = storage
+        .add_repo(&p.id, "rekey", root.to_str().unwrap())
+        .unwrap();
+    // Set stored git_url to the OLD identity (simulating a previously stored key).
+    storage
+        .set_repo_git_url(&repo.id, "github.com/owner/old")
+        .unwrap();
+
+    // Resolve by path: the path match finds the row. The on-disk origin is
+    // "github.com/owner/new" but the stored git_url is "github.com/owner/old".
+    // Stored git_url governs: no re-key, no backfill (it's non-NULL).
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(resolved.project.id, p.id);
+
+    // Stored git_url is unchanged.
+    let updated = storage.get_repo(&repo.id).unwrap().unwrap();
+    assert_eq!(
+        updated.git_url.as_deref(),
+        Some("github.com/owner/old"),
+        "stored git_url must not be re-keyed by a changed on-disk origin"
+    );
+}
+
+/// Two folders with the same identity and both live paths: the second
+/// registration becomes a distinct project named <repo>@<dir>.
+#[test]
+fn two_live_checkouts_same_identity_register_as_distinct_projects() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let key = "github.com/owner/checkout";
+
+    let d1 = git_tempdir_with_remote("checkout-a", "https://github.com/owner/checkout");
+    let d2 = git_tempdir_with_remote("checkout-b", "https://github.com/owner/checkout");
+    let r1 = d1.path().join("checkout-a");
+    let r2 = d2.path().join("checkout-b");
+
+    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
+    // First registration: bare dir name (free).
+    assert_eq!(first.project.name, "checkout-a");
+
+    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
+    // Second: identity match among live paths → <repo>@<dir>
+    assert_eq!(second.project.name, "checkout@checkout-b");
+    assert_ne!(first.project.id, second.project.id);
+    assert_eq!(storage.list_projects().unwrap().len(), 2);
+}
+
+/// Naming rule: bare repo name used when free (identity-bearing).
+#[test]
+fn identity_bearing_bare_name_used_when_free() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d = git_tempdir_with_remote("freename", "https://github.com/owner/freename");
+    let root = d.path().join("freename");
+
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(
+        resolved.project.name, "freename",
+        "bare name must be used when free"
+    );
+}
+
+/// Naming rule: owner-prefixed name when the short name is taken by a
+/// DIFFERENT identity — no -2 suffix produced for identity-bearing registrations.
+#[test]
+fn identity_bearing_owner_prefixed_when_short_name_taken() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    // First repo: takes the bare name "taken" with identity A.
+    let d1 = git_tempdir_with_remote("taken", "https://github.com/owner-a/taken");
+    let r1 = d1.path().join("taken");
+    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
+    assert_eq!(first.project.name, "taken");
+
+    // Second repo: same dir name "taken" but different identity C.
+    let d2 = git_tempdir_with_remote("taken", "https://github.com/owner-c/taken");
+    let r2 = d2.path().join("taken");
+    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
+    // "taken" is taken by identity A (owner-a). Identity C (owner-c) is different.
+    // Owner-prefixed: "owner-c/taken".
+    assert_eq!(
+        second.project.name, "owner-c/taken",
+        "owner-prefixed name when short name taken by different identity"
+    );
+    assert_ne!(
+        second.project.name, "taken-2",
+        "no -2 suffix for identity-bearing registrations"
+    );
 }
