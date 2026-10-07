@@ -676,7 +676,6 @@ fn changed_origin_does_not_rekey_stored_identity() {
 #[test]
 fn two_live_checkouts_same_identity_register_as_distinct_projects() {
     let storage = SqliteStorage::open_in_memory().unwrap();
-    let key = "github.com/owner/checkout";
 
     let d1 = git_tempdir_with_remote("checkout-a", "https://github.com/owner/checkout");
     let d2 = git_tempdir_with_remote("checkout-b", "https://github.com/owner/checkout");
@@ -733,4 +732,68 @@ fn identity_bearing_owner_prefixed_when_short_name_taken() {
         second.project.name, "taken-2",
         "no -2 suffix for identity-bearing registrations"
     );
+}
+
+/// A vanished-path identity match (step 2) registers a fresh project with a
+/// user-facing notice. The stored row's path no longer exists, so the lookup
+/// finds the identity among vanished paths and registers fresh.
+#[test]
+fn vanished_path_identity_match_registers_fresh_with_notice() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let key = "github.com/owner/vanished";
+
+    // Create a repo with the identity at a path, then delete the path.
+    let d1 = git_tempdir_with_remote("vanished", "https://github.com/owner/vanished");
+    let root1 = d1.path().join("vanished");
+    let p1 = storage.create_project("vanished-proj", None).unwrap();
+    let r1 = storage
+        .add_repo(&p1.id, "vanished", root1.to_str().unwrap())
+        .unwrap();
+    storage.set_repo_git_url(&r1.id, key).unwrap();
+
+    // Delete the directory to make the path "vanished".
+    std::fs::remove_dir_all(&root1).unwrap();
+
+    // New checkout at a DIFFERENT path with the same identity.
+    let d2 = git_tempdir_with_remote("vanished-new", "https://github.com/owner/vanished");
+    let root2 = d2.path().join("vanished-new");
+
+    let resolved = resolve_or_register(&storage, root2.as_path()).unwrap();
+    assert_ne!(resolved.project.id, p1.id);
+    assert_eq!(resolved.project.name, "vanished-new");
+    let updated = storage.get_repo(&resolved.repo.id).unwrap().unwrap();
+    assert_eq!(updated.git_url.as_deref(), Some(key));
+}
+
+/// Unification test: MCP `resolve_or_register` and CLI `register` produce
+/// identical project/repo rows for the same path+identity input, proving
+/// one shared `register()` function backs both entry points.
+#[test]
+fn unification_mcp_and_cli_produce_identical_rows() {
+    use crate::config::RepoConfig;
+    use crate::mcp::repo_resolution::{RegistrationRequest, register};
+
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d = git_tempdir_with_remote("unify", "https://github.com/owner/unify");
+    let root = d.path().join("unify");
+
+    let mcp = resolve_or_register(&storage, root.as_path()).unwrap();
+    let config = RepoConfig::default();
+    let cli = register(
+        &storage,
+        &RegistrationRequest {
+            repo_root: root.as_path(),
+            project_name: None,
+            config: &config,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(mcp.project.id, cli.project.id, "project IDs must match");
+    assert_eq!(
+        mcp.project.name, cli.project.name,
+        "project names must match"
+    );
+    assert_eq!(mcp.repo.id, cli.repo.id, "repo IDs must match");
+    assert_eq!(mcp.repo.name, cli.repo.name, "repo names must match");
 }
