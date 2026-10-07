@@ -54,8 +54,9 @@ pub struct RegistrationRequest<'a> {
 ///    stored `git_url` is authoritative.
 /// 2. **Identity match among vanished paths** — a stored repo row with the
 ///    same identity whose `local_path` no longer exists. Hands off to move
-///    handling (issue #30); until that lands, register fresh with a
-///    user-facing notice naming the vanished path.
+///    handling (issue #30); until that lands, register fresh (this branch
+///    only runs for repos whose identity is not derivable — an identity-
+///    derivable vanished path is caught by step 3 first).
 /// 3. **Identity match among live paths** — a live checkout of the same
 ///    identity is already registered. Registers a distinct project named
 ///    `<repo>@<dir>` (the new checkout is never attached to the first one's
@@ -107,7 +108,7 @@ pub fn register(
 
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);
-    let identity: Option<&str> = identity.as_deref();
+    let identity_ref: Option<&str> = identity.as_deref();
 
     // Step 1: path match. The row is re-read from storage in BOTH branches
     // (backfilled and not) so the result always reflects the persisted row,
@@ -118,7 +119,7 @@ pub fn register(
             .ok_or_else(|| {
                 LievoError::InvalidInput(format!("project missing for repo {}", repo.id))
             })?;
-        if identity.is_some() && backfill_git_url(storage, &repo, identity)? {
+        if identity_ref.is_some() && backfill_git_url(storage, &repo, identity_ref)? {
             // Backfill wrote the row's git_url: reflect the persisted row.
             let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
                 LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
@@ -144,7 +145,7 @@ pub fn register(
     // explicitly asked for that name) — but a notice is printed so the
     // duplicate is visible (issue #29).
     if let Some(explicit) = request.project_name
-        && let Some(identity) = identity
+        && let Some(identity) = identity_ref
         && let Some(project) = storage.get_project(explicit)?
     {
         let repos = storage.list_repos(&project.id)?;
@@ -178,7 +179,7 @@ pub fn register(
     // the request carries an explicit project name: the explicit-name
     // conflict/notice above has already been evaluated (or the request has
     // no identity), so step 3's distinct-project logic does not apply.
-    if let Some(identity) = identity
+    if let Some(identity) = identity_ref
         && request.project_name.is_none()
     {
         let matches = storage.find_repos_by_git_url(identity)?;
@@ -187,14 +188,32 @@ pub fn register(
             let repo_short = repo_short_name(identity);
             let base = format!("{repo_short}@{dir_name}");
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
-            let project = storage.create_project(&candidate, None)?;
-            let repo = add_repo_row(
+            // Explicit resolution: `create_project` is only called for a name
+            // that is free, or one that `pick_available_project_name` already
+            // confirmed carries this same identity (reuse). The get-or-create
+            // fallback inside `create_project` is therefore never relied on.
+            let project = match storage.get_project(&candidate)? {
+                None => storage.create_project(&candidate, None)?,
+                Some(existing) => existing,
+            };
+            let repo = match add_repo_row(
                 storage,
                 &project.id,
                 &dir_name,
                 repo_root_str,
                 Some(identity),
-            )?;
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Best-effort cleanup: delete the project only if this call
+                    // created it (a reused same-identity project pre-exists and
+                    // is never touched).
+                    if storage.get_project(&candidate)?.is_none() {
+                        let _ = storage.delete_project(&project.id);
+                    }
+                    return Err(e);
+                }
+            };
             return Ok(ResolvedRepo { project, repo });
         }
     }
@@ -205,7 +224,7 @@ pub fn register(
         repo_root_str,
         request.project_name,
         &dir_name,
-        identity,
+        identity_ref,
     )
 }
 
@@ -234,6 +253,12 @@ fn add_repo_row(
 /// Shared fresh-registration path: create the project, add the repo row, and
 /// (if derivable) stamp the git_url. Used for step 2 (identity match among
 /// vanished paths) and step 4 (no match).
+///
+/// Resolution is explicit (`get_project` first, `create_project` only when the
+/// name is free) so the get-or-create fallback inside `create_project` is
+/// never relied on. If a project is created in this call and the following
+/// `add_repo_row` fails, the just-created project is deleted best-effort so no
+/// orphan project is left behind; the original error is returned.
 fn register_fresh(
     storage: &dyn Storage,
     repo_root_str: &str,
@@ -242,8 +267,27 @@ fn register_fresh(
     identity: Option<&str>,
 ) -> crate::Result<ResolvedRepo> {
     let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
-    let project = storage.create_project(&project_name, None)?;
-    let repo = add_repo_row(storage, &project.id, dir_name, repo_root_str, identity)?;
+    let created = storage.get_project(&project_name)?.is_none();
+    let project = if created {
+        storage.create_project(&project_name, None)?
+    } else {
+        // Explicit attach: the name resolved to a pre-existing project.
+        storage
+            .get_project(&project_name)?
+            .expect("project exists per the check above")
+    };
+    let repo = match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
+        Ok(r) => r,
+        Err(e) => {
+            // Best-effort cleanup: delete the project only if this call
+            // created it (a reused existing project pre-exists and is never
+            // touched). The delete's own error is ignored.
+            if created {
+                let _ = storage.delete_project(&project.id);
+            }
+            return Err(e);
+        }
+    };
     Ok(ResolvedRepo { project, repo })
 }
 
@@ -334,6 +378,10 @@ fn find_other_repo_by_git_url(
 ///   name is taken by a different identity AND a derivable identity exists.
 /// - `name-2`, `name-3`, … for repos with no derivable identity (resolved
 ///   open question in #29: no-identity registrations keep today's suffixing).
+///
+/// Note: this helper only *selects* a candidate name (returning the name that
+/// is either free or same-identity-reusable); `register` and `register_fresh`
+/// perform the explicit `get_project`/`create_project` resolution.
 fn pick_fresh_project_name(
     storage: &dyn Storage,
     explicit_name: Option<&str>,
