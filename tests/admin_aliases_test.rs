@@ -1,6 +1,6 @@
 // Tests for command aliases (q, serve).
 
-mod common;
+pub mod common;
 
 #[test]
 fn test_query_works_with_short_alias() {

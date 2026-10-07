@@ -106,3 +106,63 @@ fn test_fresh_db_repositories_columns_match_upgraded_db() {
         "fresh DB must have both unresolved columns: {fresh_cols:?}"
     );
 }
+
+/// Issue #31: a v10 database whose `repositories.git_url` is NULL must
+/// open unchanged — `migrate()` is a no-op, the schema version stays 10,
+/// and a NULL `git_url` reads back as `None` (no fabricated default).
+#[test]
+fn test_v10_db_null_git_url_opens_unchanged() {
+    let tf = NamedTempFile::new().unwrap();
+    let conn = Connection::open(tf.path()).unwrap();
+    conn.pragma_update(None, "user_version", 10).unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+            description TEXT, output_dirs TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE repositories (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+            name TEXT NOT NULL, git_url TEXT,
+            local_path TEXT NOT NULL UNIQUE,
+            default_branch TEXT DEFAULT 'main',
+            last_analyzed_commit TEXT, index_path TEXT,
+            summarization_unconfigured TEXT,
+            unresolved_internal INTEGER, unresolved_external INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, name) VALUES ('p1', 'test-project')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO repositories (id, project_id, name, local_path, git_url) VALUES ('r1', 'p1', 'Test Repo', '/tmp/test', NULL)",
+        [],
+    )
+    .unwrap();
+
+    // migrate() must be a no-op: user_version already at 10, no DDL runs.
+    migrate(&conn).unwrap();
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
+
+    // The row's git_url reads back NULL (None), not a fabricated default.
+    let git_url: Option<String> = conn
+        .query_row(
+            "SELECT git_url FROM repositories WHERE id = 'r1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(git_url, None);
+}

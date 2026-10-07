@@ -176,6 +176,37 @@ fn find_repo_by_path_returns_none_when_no_repo_matches() {
     );
 }
 
+// -- find_repos_by_git_url (issue #31): cross-project Vec lookup --
+// (Empty/no-match cases are covered at the storage layer in
+// src/storage/sqlite_tests.rs; the case unique to this file is the
+// cross-project multi-checkout lookup below.)
+
+#[test]
+fn find_repos_by_git_url_finds_checkouts_across_projects() {
+    // The same normalized remote can be registered at several local_paths
+    // across projects — the lookup must return ALL matching rows.
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let key = "github.com/example/shared";
+
+    let p1 = storage.create_project("shared-a", None).unwrap();
+    let r1 = storage
+        .add_repo(&p1.id, "shared-a", "/checkouts/shared-a")
+        .unwrap();
+    storage.set_repo_git_url(&r1.id, key).unwrap();
+
+    let p2 = storage.create_project("shared-b", None).unwrap();
+    let r2 = storage
+        .add_repo(&p2.id, "shared-b", "/checkouts/shared-b")
+        .unwrap();
+    storage.set_repo_git_url(&r2.id, key).unwrap();
+
+    let found = storage.find_repos_by_git_url(key).unwrap();
+    assert_eq!(found.len(), 2, "both checkouts must be returned");
+    let ids: Vec<&str> = found.iter().map(|r| r.id.as_str()).collect();
+    assert!(ids.contains(&r1.id.as_str()));
+    assert!(ids.contains(&r2.id.as_str()));
+}
+
 #[test]
 fn unregistered_repo_creates_a_fresh_single_repo_project() {
     let storage = SqliteStorage::open_in_memory().unwrap();

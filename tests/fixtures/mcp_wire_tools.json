@@ -1,0 +1,345 @@
+{
+  "tools": [
+    {
+      "name": "search_entities",
+      "description": "Search for entities by name or keyword. Start here to discover entity IDs for use with get_entity, list_relationships, and read_file. Set semantic=true to use embedding-based (vector) search — falls back to name/path matching if no vector index exists (run 'lievo refresh' to build the index).",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "query"
+        ],
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "semantic": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "get_entity",
+      "description": "Get full details for a single entity including metrics and tier. Use entity IDs returned by search_entities or list_subsystems. Set include_children=true to fetch structural children (for modules/subsystems). This replaces get_module_details.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "entity_id"
+        ],
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "include_children": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "list_relationships",
+      "description": "List what an entity depends on and what depends on it. Useful for coupling and impact analysis. Works on any entity type. The response also carries `unresolved_imports` (count of internal imports in the entity's repo that failed resolution; null when not recorded) and `resolution_coverage` (null when unknown). Each edge also carries `provenance` (\"resolved\" or \"heuristic\") — resolved edges come from exact import-resolution or structural grouping; heuristic edges from name/fn-map matching. An empty `depended_by` with `unresolved_imports > 0` does NOT mean dead code — absence of dependents may reflect unresolved imports.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "entity_id"
+        ],
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "list_subsystems",
+      "description": "List all top-level subsystems. Use FIRST when asked about architecture or project overview.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "meta": null
+    },
+    {
+      "name": "get_function",
+      "description": "Get detailed information about a function or class entity including source code, signature, what it calls, and what calls it. More token-efficient than read_file for understanding a single function. Use after search_entities to drill into specific functions. If get_function returns an error about missing entities, run 'lievo refresh --force <project>' to re-index.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "entity_id"
+        ],
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "get_conventions",
+      "description": "List detected coding conventions",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "meta": null
+    },
+    {
+      "name": "get_insights",
+      "description": "Get architectural insights like complexity hotspots, coupling warnings, and coverage gaps. Filter by severity (critical/high/medium/low) or category (complexity_hotspot, high_coupling, coverage_gap, god_module, circular_dependency, naming, testing, structure). Use when asked about code quality or technical debt.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "meta": null
+    },
+    {
+      "name": "read_file",
+      "description": "Read the raw source code of a file entity. Takes a file entity ID (not a file path) — use search_entities with a filename to get the entity ID. Content is truncated to 32K chars for large files.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "entity_id"
+        ],
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "list_directory",
+      "description": "List files in a directory relative to the repo root. Returns direct children only (non-recursive). Use to browse project structure when you know the directory path.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "path"
+        ],
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "get_execution_flows",
+      "description": "Get precomputed execution flows showing call sequences from entry points. Use when asked about how functions are called or what the execution path is. When empty, the response includes a message explaining the limitations of the current data.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "entry_point": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_depth": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "meta": null
+    },
+    {
+      "name": "list_project_docs",
+      "description": "List all discovered project documentation files with their sizes. Use to discover what documentation is available, then call read_project_doc to read specific files.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "meta": null
+    },
+    {
+      "name": "read_project_doc",
+      "description": "Read a project documentation file by path. Pass the 'path' field exactly as returned by list_project_docs. Returns raw file content by default; pass format='structured' for regex-extracted headings, decisions, terminology, and config_values.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "path"
+        ],
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "get_impact",
+      "description": "Analyse the impact of changing one or more files. Returns {files, dependents:[{path, hop}], unresolved_imports, resolution_coverage}. Each dependent is a repo-relative path with hop 0 (direct) or 1 (second-hop), counting import, call, depends-on, and implements edges. unresolved_imports/resolution_coverage are null when not recorded; an empty dependents list with unresolved_imports > 0 does NOT mean dead code.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "files"
+        ],
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "meta": null
+    },
+    {
+      "name": "get_hotspots",
+      "description": "Return the highest-complexity entities sorted by complexity score. Defaults to file-tier only (pass tier='module' or tier='subsystem' to change). Use to identify risky code, focus refactoring effort, or orient in an unfamiliar codebase. Limit defaults to 10 (max 50).",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "default": 10
+          },
+          "tier": {
+            "type": "string",
+            "default": "file"
+          }
+        },
+        "type": "object"
+      },
+      "meta": null
+    },
+    {
+      "name": "lievo_explore",
+      "description": "PRIMARY TOOL — call FIRST for any structural question about this codebase. Query word-matches file names/paths AND symbol names (functions, types); an exact symbol-name match ranks above a file-name or path match. Tier 1 (default): per-symbol map (name, kind, qualified_path, signature, one-line summary), no source bodies, no call paths or blast radius. Tier 2 (include_source=true): verbatim line-numbered source for matched symbols. include_depth=true adds the per-file call_paths and blast_radius to each symbol (blast-radius/impact opt-in; ignored in scope mode). Pass scope='<dir>' (e.g. 'src/retrieval') to switch to scope-membership listing: the sorted, repo-relative indexed files under that directory prefix; scope is the sole trigger for this mode. Pass files=[...] (repo-relative paths, one batched call) to fetch files directly; files short-circuits query word-match and scope. Pass bundle='<dir>' (a repo-relative directory prefix) to select subsystem-bundle mode: one call under the 24K output cap returns the verbatim line-numbered source for the packed files, the intra-scope Calls/Imports edges between those files, a not_shown_files list, and a structured completeness field {complete, omitted_files, omitted_edges}. Output capped at 24K chars: when the cap is hit, a structured completeness field names what was omitted, with returned/total/next continuation pointers. Batch: request related files in one call instead of one call per file, and page the rest with returned/total/next or offset. Do not re-read a file whose source you already received this session, and do not re-request edges or relationships already returned. A files-mode or bundle response with completeness.complete == true has returned everything requested for that scope — stop, and do not re-read any file whose source was already returned. Stop: when the response has no continuation pointer and returned equals total, the result set is complete — answer from it.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "query": {
+            "description": "Keyword or name fragment to word-match against indexed file names/paths\nand symbol names (functions, types). Exact symbol-name matches rank\nabove file-name/path matches (e.g. 'auth', 'sum_of_squares'). Not used\nwhen `files` is passed.",
+            "type": "string",
+            "default": ""
+          },
+          "files": {
+            "description": "Repo-relative file paths to fetch in ONE batched call (pack all needed\npaths in this call rather than one call per file). When present,\nshort-circuits `query` word-match and `scope` listing.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_files": {
+            "description": "Maximum number of file entities to include in the response.\nDefault 8, max 30.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "default": 8
+          },
+          "include_source": {
+            "description": "When true, returns verbatim line-numbered source for matched symbols\n(tier 2). Default false (tier 1: map only).",
+            "type": "boolean",
+            "default": false
+          },
+          "scope": {
+            "description": "Optional repo-relative directory prefix (e.g. \"src/retrieval\"). When\nset, switches from word-match search to scope-membership listing: the\nsorted, repo-relative indexed files under that prefix. This is the sole\ntrigger for scope mode; a path-like `query` alone never triggers it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "description": "Zero-based offset into the sorted scope listing, for paging through\nscopes whose file count exceeds `max_files`. Ignored when `scope` is\nabsent.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          },
+          "include_depth": {
+            "description": "When true, includes `call_paths` (outgoing and incoming call edges) and\n`blast_radius` (incoming dependents only) on each symbol — the opt-in\nfor blast-radius/impact questions. Default false (lean response).\nIgnored in scope mode. blast_radius entries carry a `hop` level (0 =\ndirect dependent, 1 = second level) and are capped per file, nearest\nfirst. blast_radius_complete is true when the closure is the complete\ntwo-level reverse dependency set and its files need not be\nre-queried for depth.",
+            "type": "boolean",
+            "default": false
+          },
+          "bundle": {
+            "description": "Repo-relative directory prefix to select subsystem-bundle mode: one\ncall under the 24K output cap returns the verbatim line-numbered source\nfor the packed files, the intra-scope Calls/Imports edges between them,\na `not_shown_files` list, and a structured `completeness` field\n{complete, omitted_files, omitted_edges}. Presence (any value) is the\nsole trigger for bundle mode — it short-circuits `query`, `files` and\n`scope`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "meta": {
+        "anthropic/alwaysLoad": true
+      }
+    }
+  ]
+}

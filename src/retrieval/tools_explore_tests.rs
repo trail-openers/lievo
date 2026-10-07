@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use crate::mcp::LievoMcpServer;
 use crate::model::{EdgeProvenance, Entity, EntityTier, RelType, Relationship};
 use crate::retrieval::tool_trait::Tool;
 use crate::retrieval::tools::{ExploreTool, ToolContext};
@@ -23,6 +24,7 @@ use crate::retrieval::tools_explore::{
 };
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
+use rmcp::handler::server::ServerHandler;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,10 +166,16 @@ fn is_small_body_threshold_boundary() {
 fn explore_input_schema_exposes_only_two_tier_knobs() {
     let (storage, project_id) = setup_project("explore-schema");
     let ctx = make_ctx(storage, project_id, PathBuf::new());
-    let tool = ExploreTool { ctx };
+    let server = LievoMcpServer::new(ctx);
+    let tool = server
+        .get_tool("lievo_explore")
+        .expect("lievo_explore must be registered");
 
-    let schema = tool.input_schema();
-    let props = schema["properties"].as_object().unwrap();
+    let props = tool
+        .input_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("wire schema must expose properties");
     // Exactly eight properties: query, include_source, max_files (two-tier
     // disclosure, issue #682 AC #5), include_depth (depth-volume knob,
     // issue #723) plus scope + offset (scope-membership listing mode, issue
@@ -183,49 +191,41 @@ fn explore_input_schema_exposes_only_two_tier_knobs() {
     assert!(props.contains_key("offset"));
     assert!(props.contains_key("files"));
     assert!(props.contains_key("bundle"));
-    assert_eq!(props["files"]["type"], "array");
-    assert_eq!(props["bundle"]["type"], "string");
-    assert_eq!(props["include_source"]["type"], "boolean");
-    assert_eq!(props["include_depth"]["type"], "boolean");
-    assert_eq!(props["max_files"]["type"], "integer");
-    assert_eq!(props["scope"]["type"], "string");
-    assert_eq!(props["offset"]["type"], "integer");
+    // Issue #22 (workstream b): schemars renders Option<T> as ["T", "null"],
+    // unlike the former hand-written json! which used plain "T". Adapted to the
+    // wire form, not weakened — each assertion still pins the same contract.
+    assert_eq!(props["files"]["type"], json!(["array", "null"]));
+    assert_eq!(props["bundle"]["type"], json!(["string", "null"]));
+    assert_eq!(props["include_source"]["type"], json!("boolean"));
+    assert_eq!(props["include_depth"]["type"], json!("boolean"));
+    assert_eq!(props["max_files"]["type"], json!("integer"));
+    assert_eq!(props["scope"]["type"], json!(["string", "null"]));
+    assert_eq!(props["offset"]["type"], json!(["integer", "null"]));
     assert!(
         !props.contains_key("tier")
             && !props.contains_key("depth")
             && !props.contains_key("detail"),
         "no third disclosure knob may exist (two tiers only)"
     );
-    let required = schema["required"].as_array().unwrap();
-    assert_eq!(
-        required,
-        &Vec::<Value>::new(),
+    // All fields are optional (query has #[serde(default)], the rest are
+    // Option<T> or carry #[serde(default)]), so the wire schema's required set
+    // is empty. schemars omits the key entirely when no field is required.
+    let required: Vec<Value> = tool
+        .input_schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|r| r.to_vec())
+        .unwrap_or_default();
+    assert!(
+        required.is_empty(),
         "no field is required: query is optional when `files` is passed (issue #741)"
     );
-    assert!(
-        !required.contains(&"include_source".into()),
-        "include_source must be optional (tier 1 is the default)"
-    );
-    assert!(
-        !required.contains(&"scope".into()),
-        "scope must be optional"
-    );
-    assert!(
-        !required.contains(&"offset".into()),
-        "offset must be optional"
-    );
-    assert!(
-        !required.contains(&"include_depth".into()),
-        "include_depth must be optional (default false, issue #731)"
-    );
-    assert!(
-        !required.contains(&"files".into()),
-        "files must be optional (issue #741)"
-    );
-    assert!(
-        !required.contains(&"bundle".into()),
-        "bundle must be optional (subsystem-bundle mode, issue #743)"
-    );
+    assert!(!required.contains(&json!("include_source")));
+    assert!(!required.contains(&json!("scope")));
+    assert!(!required.contains(&json!("offset")));
+    assert!(!required.contains(&json!("include_depth")));
+    assert!(!required.contains(&json!("files")));
+    assert!(!required.contains(&json!("bundle")));
 }
 
 // ---------------------------------------------------------------------------

@@ -72,7 +72,7 @@ pub(super) fn try_load_semantic_searcher(
     Option<Box<dyn crate::retrieval::semantic_searcher::SemanticSearcher>>,
     Option<String>,
 ) {
-    // Load UsearchSearcher (tree-sitter based semantic search)
+    // Load UsearchSearcher (embedding-based (model2vec + usearch) semantic search)
     let path = std::path::Path::new(index_path);
     match crate::retrieval::usearch_searcher::UsearchSearcher::load(path) {
         Ok(searcher) => {
@@ -99,35 +99,6 @@ pub(super) fn try_load_semantic_searcher(
 impl<S: Storage + Send> Tool for SearchEntitiesTool<S> {
     fn name(&self) -> &str {
         "search_entities"
-    }
-
-    fn description(&self) -> &str {
-        "Search for entities by name or keyword. Set semantic=true to use tree-sitter-based semantic code search (intelligently finds related code even without exact name matches). Falls back to name/path matching if no vector index exists — run 'lievo refresh' to build the index."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Keyword or name fragment to search, e.g. 'auth', 'UserService', 'src/api'. Returns matching entities with their IDs."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results (default 10)"
-                },
-                "semantic": {
-                    "type": "boolean",
-                    "description": "Whether to use semantic search (tree-sitter-based). When true, uses intelligent code search instead of simple name/path matching. Default false."
-                },
-                "tier": {
-                    "type": "string",
-                    "description": "Optional entity tier filter. Valid values: 'function', 'file', 'module', 'subsystem'."
-                }
-            },
-            "required": ["query"]
-        })
     }
 
     fn call(&self, input: Value) -> crate::Result<String> {

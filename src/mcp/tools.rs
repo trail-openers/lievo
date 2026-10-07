@@ -86,7 +86,7 @@ fn success_shaped_error(e: &crate::LievoError) -> CallToolResult {
 impl LievoMcpServer {
     #[tool(
         name = "search_entities",
-        description = "Search for entities by name or keyword. Start here to discover entity IDs for use with get_entity, list_relationships, and read_file. Set semantic=true to use tree-sitter-based semantic code search — falls back to name/path matching if no vector index exists (run 'lievo refresh' to build the index)."
+        description = "Search for entities by name or keyword. Start here to discover entity IDs for use with get_entity, list_relationships, and read_file. Set semantic=true to use embedding-based (vector) search — falls back to name/path matching if no vector index exists (run 'lievo refresh' to build the index)."
     )]
     async fn search_entities(
         &self,
@@ -413,3 +413,7 @@ mod explore_bundle_wire_tests;
 #[cfg(test)]
 #[path = "explore_wire_size_tests.rs"]
 mod explore_wire_size_tests;
+
+#[cfg(test)]
+#[path = "wire_golden_tests.rs"]
+mod wire_golden_tests;
