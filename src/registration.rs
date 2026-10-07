@@ -67,11 +67,12 @@ pub struct RegistrationRequest<'a> {
 ///    existing `name-2`, `name-3`, … suffix (issue #29's resolved open
 ///    question).
 ///
-/// Explicit-name conflict (owned here, issue #29): when the request carries
-/// an explicit project name, that name already exists, and a repo in that
-/// project stores a non-NULL `git_url` that differs from this request's
-/// derived identity, the name is "taken by a different identity" —
-/// `InvalidInput`. A NULL stored `git_url` is not a conflict.
+/// Explicit-name conflict (owned here, issue #29): the check fires only
+/// when BOTH the request has a derivable identity AND the named project
+/// holds a repo whose stored `git_url` is non-NULL and differs from that
+/// identity — then the name is "taken by a different identity"
+/// (`InvalidInput`). A stored NULL `git_url`, or a request with no
+/// derivable identity, never conflicts.
 ///
 /// Returns the project and the (possibly new, possibly existing) repository
 /// row. An explicit project name is only checked when a new registration is
@@ -360,8 +361,8 @@ fn pick_available_project_name(
 }
 
 /// The owner-prefixed name (`<owner>/<repo>`) extracted from an identity key
-/// (`"github.com/owner/repo"` → `"owner/repo"`); falls back to `<repo>-2`
-/// when the owner cannot be determined.
+/// (`"github.com/owner/repo"` → `"owner/repo"`); falls back to `<dir>-2`
+/// (the directory name, `dir_name`) when the owner cannot be determined.
 fn owner_prefixed_name(identity: &str, dir_name: &str) -> String {
     let parts: Vec<&str> = identity.split('/').collect();
     let repo = parts.last().copied().unwrap_or("");
