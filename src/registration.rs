@@ -58,8 +58,9 @@ pub struct RegistrationRequest<'a> {
 ///    user-facing notice naming the vanished path.
 /// 3. **Identity match among live paths** — a live checkout of the same
 ///    identity is already registered. Registers a distinct project named
-///    `<repo>@<dir>` (with a deterministic suffix if that name is already
-///    taken), never a move.
+///    `<repo>@<dir>` (the new checkout is never attached to the first one's
+///    project by name or identity), with a deterministic suffix if that name
+///    is already taken, never a move.
 /// 4. **Fresh registration** — no path, no identity match: a new project
 ///    named `<dir>` if free, `<owner>/<repo>` if `<dir>` is taken by a
 ///    different identity, and — for repos with no derivable identity — the
@@ -94,6 +95,7 @@ pub fn register(
 
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);
+    let identity: Option<&str> = identity.as_deref();
 
     // Step 1: path match.
     if let Some(mut repo) = find_repo_by_path(storage, request.repo_root)? {
@@ -102,8 +104,10 @@ pub fn register(
             .ok_or_else(|| {
                 LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
             })?;
-        if backfill_git_url(storage, &repo, identity.as_deref())? {
-            repo.git_url = identity.clone();
+        if let Some(key) = identity
+            && backfill_git_url(storage, &repo, Some(key))?
+        {
+            repo.git_url = Some(key.to_string());
         }
         return Ok(ResolvedRepo { project, repo });
     }
@@ -115,7 +119,7 @@ pub fn register(
     // cannot conflict. When the request itself has no derivable identity
     // (`None`), the conflict check is skipped entirely (no re-key).
     if let Some(explicit) = request.project_name
-        && let Some(identity) = identity.as_deref()
+        && let Some(identity) = identity
         && let Some(project) = storage.get_project(explicit)?
     {
         let conflicting = storage.list_repos(&project.id)?.iter().any(|r| {
@@ -133,30 +137,8 @@ pub fn register(
 
     let dir_name = repo_dir_name(request.repo_root);
 
-    // Step 1b: a no-identity repo already registered under an explicit
-    // project name is that project's own (issue #29 lens fix): stamp the
-    // override's identity on the row and return the existing project, same
-    // as the identity-bearing path-match backfill above.
-    if identity.is_some()
-        && let Some(explicit) = request.project_name
-        && !explicit.is_empty()
-        && let Some(project) = storage.get_project(explicit)?
-    {
-        let matching = storage
-            .list_repos(&project.id)?
-            .into_iter()
-            .find(|r| r.local_path == repo_root_str && r.git_url.is_none());
-        if let Some(mut repo) = matching {
-            if let Some(key) = identity.as_deref() {
-                storage.set_repo_git_url(&repo.id, key)?;
-                repo.git_url = Some(key.to_string());
-            }
-            return Ok(ResolvedRepo { project, repo });
-        }
-    }
-
     // Steps 2 & 3: identity lookup (only when a derivable identity exists).
-    if let Some(identity) = identity.as_deref() {
+    if let Some(identity) = identity {
         let matches = storage.find_repos_by_git_url(identity)?;
         let first_vanished = matches
             .iter()
@@ -205,7 +187,7 @@ pub fn register(
         repo_root_str,
         request.project_name,
         &dir_name,
-        identity.as_deref(),
+        identity,
     )
 }
 
@@ -311,9 +293,10 @@ fn register_fresh(
 /// Resolve the project name for a fresh registration.
 ///
 /// Precedence (issue #29 naming rules):
-/// - CLI explicit project name: used as-is when free; the taken-by-different-
-///   identity collision is caught in `register` before reaching here, so we
-///   trust it here.
+/// - CLI explicit project name: used as-is; the taken-by-different-identity
+///   collision is caught in `register` before reaching here, so we trust it
+///   here. `create_project` resolves the name to the existing project (no
+///   duplicate row), and a second repo row may attach to it.
 /// - Bare `<dir>` if free.
 /// - `<owner>/<repo>` (with a deterministic suffix if taken) when the short
 ///   name is taken by a different identity AND a derivable identity exists.
@@ -343,7 +326,9 @@ fn pick_fresh_project_name(
 /// Pick a free project name starting from `base`, trying `base-2`,
 /// `base-3`, … if needed. If `identity` is `Some` and a candidate of that
 /// name already exists owned by a repo with the SAME identity, reuse it
-/// (idempotent); otherwise keep suffixing.
+/// (idempotent, issue #29: an already-taken suffix slot carrying the same
+/// identity is attached to rather than re-suffixed); otherwise keep
+/// suffixing.
 fn pick_available_project_name(
     storage: &dyn Storage,
     base: &str,

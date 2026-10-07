@@ -472,6 +472,35 @@ fn backfill_collision_path_match_wins_no_merge() {
     assert_eq!(storage.list_repos(&p_b.id).unwrap().len(), 1);
 }
 
+/// Issue #29: two live same-identity checkouts at the SAME directory name —
+/// the second registers a DISTINCT project named `<repo>@<dir>` (not attached
+/// to the first's project by name or identity, never a move). Distinct from
+/// the same-dir-name re-registration case (where an already-taken
+/// `<repo>@<dir>` name owned by a same-identity project is reused as a second
+/// repo row).
+#[test]
+fn two_live_same_identity_folders_same_dir_name_get_distinct_repo_at_dir_project() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d1 = git_tempdir_identity("twin", "git@github.com:acme/twin");
+    let d2 = git_tempdir_identity("twin", "git@github.com:acme/twin");
+    let r1 = d1.path().join("twin");
+    let r2 = d2.path().join("twin");
+
+    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
+    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
+
+    assert_ne!(first.project.id, second.project.id);
+    assert_eq!(first.project.name, "twin", "first is the bare dir name");
+    assert_eq!(
+        second.project.name, "twin@twin",
+        "second live same-identity checkout at the same dir name is <repo>@<dir>"
+    );
+    // Never a move: the stored path of the first registration is untouched.
+    let repos1 = storage.list_repos(&first.project.id).unwrap();
+    assert_eq!(repos1.len(), 1);
+    assert_eq!(repos1[0].local_path, r1.to_str().unwrap());
+}
+
 /// Issue #29: a changed origin on a live repo does not re-key — only the
 /// stored git_url governs identity, so resolve_or_register on a path-matched
 /// live repo whose on-disk remote changed must still resolve by path and
@@ -563,16 +592,45 @@ fn identity_bearing_twin_reuses_owner_prefixed_project() {
     assert_ne!(second.project.id, first.project.id);
 
     // A third acme/twin repo at yet another "twin" dir: now an acme/twin
-    // identity match exists (d1's repo is live) → step 3: distinct
-    // <repo>@<dir> project ("twin@twin").
+    // identity match exists (d1's repo is live) → step 3. The base <repo>@<dir>
+    // name "twin@twin" is already taken by a DIFFERENT-identity project (d0,
+    // the bare "twin" project), so a distinct project is created instead — a
+    // same-identity reuse only applies to a project that carries the same
+    // identity. Never a move, never a -2 suffix.
     let d2 = git_tempdir_identity("twin", "git@github.com:acme/twin");
     let r2 = d2.path().join("twin");
     let third = resolve_or_register(&storage, r2.as_path()).unwrap();
     assert_eq!(
         third.project.name, "twin@twin",
-        "live same-identity twin is <repo>@<dir> (step 3), not a -2 suffix"
+        "live same-identity twin takes <repo>@<dir> (step 3)"
     );
-    assert_ne!(third.project.id, second.project.id);
+    assert_ne!(
+        third.project.id, second.project.id,
+        "a distinct project is created; the different-identity owner is never reused"
+    );
+    assert_ne!(
+        third.project.id, first.project.id,
+        "the different-identity bare-name project is never reused"
+    );
+    let second_repos = storage.list_repos(&second.project.id).unwrap();
+    assert_eq!(
+        second_repos.len(),
+        1,
+        "the different-identity project keeps only its original repo row"
+    );
+    assert!(
+        second_repos
+            .iter()
+            .all(|r| r.local_path != r2.to_str().unwrap()),
+        "the new path must not be attached to the different-identity project"
+    );
+    let third_repos = storage.list_repos(&third.project.id).unwrap();
+    assert!(
+        third_repos
+            .iter()
+            .any(|r| r.local_path == r2.to_str().unwrap()),
+        "the new path must be registered with its own row in the new project"
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::json_escape;
 use lievo::output::OutputFormat;
-use lievo::registration::{RegistrationRequest, find_repo_by_path, register};
+use lievo::registration::{RegistrationRequest, register};
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
 
@@ -86,28 +86,10 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         )));
     }
 
-    // Idempotent early return (issue #29): this path is already registered.
-    // The explicit-name conflict rule itself is owned by `register`.
-    if let Some(repo) = find_repo_by_path(storage, &canonical)? {
-        let existing_project = storage
-            .get_project_by_id(&repo.project_id)?
-            .ok_or_else(|| {
-                LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
-            })?;
-        if project_name.is_none() || Some(existing_project.name.as_str()) == project_name {
-            println!(
-                "Repository already registered at {} in project '{}'",
-                canonical.display(),
-                existing_project.name
-            );
-            return Ok(());
-        }
-    }
-
-    // Delegate to the shared registration function (issue #29); the
-    // explicit-name "taken by a different identity" conflict is enforced
-    // there. The repo's own config (identity override, etc.) is loaded by
-    // `register` from the repo root.
+    // Delegate to the shared registration function (issue #29); it owns the
+    // idempotent path-match fast path (step 1) and the explicit-name
+    // "taken by a different identity" conflict. The repo's own config
+    // (identity override, etc.) is loaded by `register` from the repo root.
     let request = RegistrationRequest {
         repo_root: &canonical,
         project_name,

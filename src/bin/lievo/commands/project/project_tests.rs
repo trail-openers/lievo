@@ -556,14 +556,17 @@ fn test_add_repo_handler_explicit_project_taken_by_different_identity_fails() {
 
 /// CLI explicit project name with a NULL-identity existing repo does NOT
 /// conflict (issue #29: a stored NULL `git_url` is not an identity, so it
-/// cannot be "a different identity").
+/// cannot be "a different identity"). The new path is registered as a SECOND
+/// repo row in the existing project; the original NULL-identity row is left
+/// untouched (no re-keying, no merge).
 #[test]
 fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
     let s = storage();
     // Create a project with a repo that has NULL git_url (no identity).
     let proj = s.create_project("null-identity-proj", None).unwrap();
     let dir1 = git_dir();
-    s.add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
         .unwrap();
 
     // New repo WITH a derivable identity at a different path. The request's
@@ -575,7 +578,35 @@ fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
     // Must succeed: a stored NULL git_url is not "a different identity".
     add_repo(&s, dir2.path(), Some("null-identity-proj")).unwrap();
 
-    // The repo was added to the existing project.
+    // The new path was registered as a second repo in the EXISTING project
+    // (not a new project, not an attachment to the old row's path).
     let projects = s.list_projects().unwrap();
     assert_eq!(projects.len(), 1, "must not create a duplicate project");
+    let repos = s.list_repos(&proj.id).unwrap();
+    assert_eq!(
+        repos.len(),
+        2,
+        "the new path must be registered as a second repo in the existing project"
+    );
+    let by_path: std::collections::HashMap<String, _> =
+        repos.iter().map(|r| (r.local_path.clone(), r)).collect();
+    let old = by_path
+        .get(dir1.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("original row at dir1 missing from project repos"));
+    assert_eq!(
+        old.id, repo1.id,
+        "the original row must be untouched (not re-keyed)"
+    );
+    assert_eq!(
+        old.git_url, None,
+        "the original NULL-identity row's git_url must stay NULL (no re-keying)"
+    );
+    let new = by_path
+        .get(dir2.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("new row at dir2 missing from project repos"));
+    assert_eq!(
+        new.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the new row must carry its own derived identity"
+    );
 }
