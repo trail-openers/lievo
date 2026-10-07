@@ -522,7 +522,8 @@ fn test_add_repo_handler_explicit_project_taken_by_different_identity_fails() {
 }
 
 /// CLI explicit project name with a NULL-identity existing repo does NOT
-/// conflict (finding 1 fix: NULL identity is not "a different identity").
+/// conflict (issue #29: a stored NULL `git_url` is not an identity, so it
+/// cannot be "a different identity").
 #[test]
 fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
     let s = storage();
@@ -532,15 +533,13 @@ fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
     s.add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
         .unwrap();
 
-    // New repo WITH an identity at a different path.
-    let dir2 = git_dir();
-    let git2 = git2::Repository::open(dir2.path()).unwrap();
-    git2.config()
-        .unwrap()
-        .set_str("remote.origin.url", "https://github.com/owner-a/repo")
-        .unwrap();
+    // New repo WITH a derivable identity at a different path. The request's
+    // derived identity is Some(...), but the stored row has a NULL git_url,
+    // so the conflict check (`stored != derived`) is `None != Some(...)` =
+    // true → no conflict. The name is free.
+    let dir2 = git_dir_with_remote("git@github.com:owner-a/repo");
 
-    // Must succeed: NULL identity is not "a different identity".
+    // Must succeed: a stored NULL git_url is not "a different identity".
     add_repo(&s, dir2.path(), Some("null-identity-proj")).unwrap();
 
     // The repo was added to the existing project.

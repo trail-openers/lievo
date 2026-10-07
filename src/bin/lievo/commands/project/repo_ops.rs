@@ -4,9 +4,9 @@ use std::path::Path;
 
 use super::json_escape;
 use lievo::config::RepoConfig;
-use lievo::identity::derive_identity;
-use lievo::mcp::repo_resolution::{RegistrationRequest, register};
+use lievo::mcp::repo_resolution::find_repo_by_path;
 use lievo::output::OutputFormat;
+use lievo::registration::{RegistrationRequest, register};
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
 
@@ -72,18 +72,6 @@ pub fn delete_repo(
     Ok(())
 }
 
-/// Whether two paths refer to the same on-disk location (raw comparison or
-/// canonicalised). Used for the idempotent "already registered at this path"
-/// check in `add_repo` (issue #29 CLI explicit project name).
-fn is_same_path(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    let ca = a.canonicalize().ok();
-    let cb = b.canonicalize().ok();
-    ca == Some(b.to_path_buf()) || ca == cb
-}
-
 pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) -> Result<()> {
     // Validate path exists and is a git repo (bare rejected).
     let canonical = path
@@ -100,48 +88,27 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         )));
     }
 
-    // Explicit project-name validation (issue #29): the name is free, or
-    // already owned by a repo at THIS path (idempotent success). A project
-    // name that exists but contains no repo at this path is treated as a
-    // hard error ONLY if it is owned by a different identity; otherwise the
-    // shared registration will add the repo under that project name.
-    if let Some(explicit) = project_name
-        && let Some(project) = storage.get_project(explicit)?
-    {
-        let repos = storage.list_repos(&project.id)?;
-        let already_registered_here = repos
-            .iter()
-            .any(|r| is_same_path(Path::new(&r.local_path), &canonical));
-        if already_registered_here {
+    // Idempotent early return (issue #29): this path is already registered.
+    // The explicit-name conflict rule itself is owned by `register`.
+    if let Some(repo) = find_repo_by_path(storage, &canonical)? {
+        let existing_project = storage
+            .get_project_by_id(&repo.project_id)?
+            .ok_or_else(|| {
+                LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
+            })?;
+        if project_name.is_none() || Some(existing_project.name.as_str()) == project_name {
             println!(
                 "Repository already registered at {} in project '{}'",
                 canonical.display(),
-                project.name
+                existing_project.name
             );
             return Ok(());
         }
-        // If the project already contains a repo at a different path whose
-        // recorded identity is non-NULL and differs from this path's derived
-        // identity, the name is taken by a different identity — a hard error
-        // distinct from the idempotent "already registered here" success.
-        // A NULL git_url is NOT an identity, so it cannot conflict.
-        let derived = derive_identity(&canonical, &RepoConfig::default());
-        let conflicting = repos.iter().any(|r| {
-            let stored = Path::new(&r.local_path);
-            !is_same_path(stored, &canonical)
-                && r.git_url.as_deref().is_some_and(|existing| {
-                    existing != derived.as_deref().unwrap_or("") && derived.is_some()
-                })
-        });
-        if conflicting {
-            return Err(LievoError::InvalidInput(format!(
-                "project name '{explicit}' is already registered at a different path (identity conflict). \
-                 Choose a different project name or register this path under its own project."
-            )));
-        }
     }
 
-    // Delegate to the shared registration function (issue #29).
+    // Delegate to the shared registration function (issue #29); the
+    // explicit-name "taken by a different identity" conflict is enforced
+    // there.
     let config = RepoConfig::default();
     let request = RegistrationRequest {
         repo_root: &canonical,
