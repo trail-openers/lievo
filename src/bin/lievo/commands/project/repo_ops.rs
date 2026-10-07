@@ -3,6 +3,9 @@
 use std::path::Path;
 
 use super::json_escape;
+use lievo::config::RepoConfig;
+use lievo::identity::derive_identity;
+use lievo::mcp::repo_resolution::{RegistrationRequest, register};
 use lievo::output::OutputFormat;
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
@@ -69,8 +72,20 @@ pub fn delete_repo(
     Ok(())
 }
 
+/// Whether two paths refer to the same on-disk location (raw comparison or
+/// canonicalised). Used for the idempotent "already registered at this path"
+/// check in `add_repo` (issue #29 CLI explicit project name).
+fn is_same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let ca = a.canonicalize().ok();
+    let cb = b.canonicalize().ok();
+    ca == Some(b.to_path_buf()) || ca == cb
+}
+
 pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) -> Result<()> {
-    // Validate path exists and is a git repo.
+    // Validate path exists and is a git repo (bare rejected).
     let canonical = path
         .canonicalize()
         .map_err(|_| LievoError::InvalidRepoPath(path.display().to_string()))?;
@@ -85,29 +100,55 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         )));
     }
 
-    // Derive project name: explicit project argument, else directory name.
-    let dir_name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| LievoError::InvalidRepoPath(canonical.display().to_string()))?;
-
-    let effective_project = project_name.unwrap_or(dir_name);
-
-    // Get or auto-create the project.
-    let project = match storage.get_project(effective_project)? {
-        Some(p) => p,
-        None => {
-            let p = storage.create_project(effective_project, None)?;
-            println!("Auto-created project '{}'", p.name);
-            p
+    // Explicit project-name validation (issue #29): the name is free, or
+    // already owned by a repo at THIS path (idempotent success). A project
+    // name that exists but contains no repo at this path is treated as a
+    // hard error ONLY if it is owned by a different identity; otherwise the
+    // shared registration will add the repo under that project name.
+    if let Some(explicit) = project_name
+        && let Some(project) = storage.get_project(explicit)?
+    {
+        let repos = storage.list_repos(&project.id)?;
+        let already_registered_here = repos
+            .iter()
+            .any(|r| is_same_path(Path::new(&r.local_path), &canonical));
+        if already_registered_here {
+            println!(
+                "Repository already registered at {} in project '{}'",
+                canonical.display(),
+                project.name
+            );
+            return Ok(());
         }
-    };
+        // If the project already contains a repo at a different path AND that
+        // repo's identity is non-NULL and differs from this path's derived
+        // identity, the name is taken by a different identity — a hard
+        // error distinct from the idempotent "already registered here"
+        // success.
+        let derived = derive_identity(&canonical, &RepoConfig::default());
+        let conflicting = repos.iter().any(|r| {
+            let stored = Path::new(&r.local_path);
+            !is_same_path(stored, &canonical) && r.git_url.as_deref() != derived.as_deref()
+        });
+        if conflicting {
+            return Err(LievoError::InvalidInput(format!(
+                "project name '{explicit}' is already registered at a different path (identity conflict). \
+                 Choose a different project name or register this path under its own project."
+            )));
+        }
+    }
 
-    let local_path = canonical.to_string_lossy().into_owned();
-    let repo = storage.add_repo(&project.id, dir_name, &local_path)?;
+    // Delegate to the shared registration function (issue #29).
+    let config = RepoConfig::default();
+    let request = RegistrationRequest {
+        repo_root: &canonical,
+        project_name,
+        config: &config,
+    };
+    let resolved = register(storage, &request)?;
     println!(
         "Registered repository '{}' (id: {}) in project '{}'",
-        repo.name, repo.id, project.name
+        resolved.repo.name, resolved.repo.id, resolved.project.name
     );
     Ok(())
 }
