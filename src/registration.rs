@@ -89,6 +89,17 @@ pub fn register(
         .to_str()
         .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
 
+    // An explicit project name that is empty or whitespace-only is not a
+    // project name: reject it up front rather than letting it flow through
+    // to `create_project` (issue #29).
+    if let Some(explicit) = request.project_name
+        && explicit.trim().is_empty()
+    {
+        return Err(LievoError::InvalidInput(
+            "project name must not be empty or whitespace".to_string(),
+        ));
+    }
+
     // Load the repository's own configuration here (rather than trusting a
     // caller-supplied default) so the `identity:` override in
     // `<repo_root>/.lievo/config.yaml` is honored identically by MCP and CLI.
@@ -98,18 +109,27 @@ pub fn register(
     let identity = derive_identity(request.repo_root, &config);
     let identity: Option<&str> = identity.as_deref();
 
-    // Step 1: path match.
-    if let Some(mut repo) = find_repo_by_path(storage, request.repo_root)? {
+    // Step 1: path match. The row is re-read from storage in BOTH branches
+    // (backfilled and not) so the result always reflects the persisted row,
+    // not the stale copy returned by the lookup.
+    if let Some(repo) = find_repo_by_path(storage, request.repo_root)? {
         let project = storage
             .get_project_by_id(&repo.project_id)?
             .ok_or_else(|| {
-                LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
+                LievoError::InvalidInput(format!("project missing for repo {}", repo.id))
             })?;
-        if let Some(key) = identity
-            && backfill_git_url(storage, &repo, Some(key))?
-        {
-            repo.git_url = Some(key.to_string());
+        if identity.is_some() && backfill_git_url(storage, &repo, identity)? {
+            // Backfill wrote the row's git_url: reflect the persisted row.
+            let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
+                LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
+            })?;
+            return Ok(ResolvedRepo { project, repo });
         }
+        // No backfill happened: still re-read, so the returned row is the
+        // persisted one (consistent with the backfill branch).
+        let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
+            LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
+        })?;
         return Ok(ResolvedRepo { project, repo });
     }
 
@@ -119,11 +139,16 @@ pub fn register(
     // is a hard error. A stored NULL `git_url` is not an identity, so it
     // cannot conflict. When the request itself has no derivable identity
     // (`None`), the conflict check is skipped entirely (no re-key).
+    // When the named project already holds a repo with the SAME identity at
+    // a different path, the registration still proceeds (the user
+    // explicitly asked for that name) — but a notice is printed so the
+    // duplicate is visible (issue #29).
     if let Some(explicit) = request.project_name
         && let Some(identity) = identity
         && let Some(project) = storage.get_project(explicit)?
     {
-        let conflicting = storage.list_repos(&project.id)?.iter().any(|r| {
+        let repos = storage.list_repos(&project.id)?;
+        let conflicting = repos.iter().any(|r| {
             r.git_url
                 .as_deref()
                 .is_some_and(|stored| stored != identity)
@@ -134,50 +159,42 @@ pub fn register(
                  Choose a different project name or register this path under its own project."
             )));
         }
+        let existing_same = repos
+            .iter()
+            .find(|r| r.git_url.as_deref() == Some(identity));
+        if let Some(existing_same) = existing_same {
+            eprintln!(
+                "attached to existing project '{}', which already tracks the same remote at '{}'",
+                sanitize(explicit),
+                sanitize(&existing_same.local_path),
+            );
+        }
     }
 
     let dir_name = repo_dir_name(request.repo_root);
 
-    // Steps 2 & 3: identity lookup (only when a derivable identity exists).
-    if let Some(identity) = identity {
+    // Step 3: identity match among live paths — distinct project named
+    // `<repo>@<dir>` (with a deterministic suffix if taken). Skipped when
+    // the request carries an explicit project name: the explicit-name
+    // conflict/notice above has already been evaluated (or the request has
+    // no identity), so step 3's distinct-project logic does not apply.
+    if let Some(identity) = identity
+        && request.project_name.is_none()
+    {
         let matches = storage.find_repos_by_git_url(identity)?;
-        let first_vanished = matches
-            .iter()
-            .find(|r| !path_exists(&r.local_path))
-            .cloned();
         let has_live = matches.iter().any(|r| path_exists(&r.local_path));
-
-        if let Some(vanished) = first_vanished {
-            // Step 2: identity match among vanished paths — hand off to move
-            // handling (issue #30). Until that lands, register fresh with a
-            // user-facing notice naming the vanished path.
-            eprintln!(
-                "registered '{}' as a fresh project (identity '{}' also appears at vanished path '{}'); move handling for re-cloned checkouts is a follow-up",
-                sanitize(&dir_name),
-                sanitize(identity),
-                sanitize(&vanished.local_path),
-            );
-            return register_fresh(
-                storage,
-                repo_root_str,
-                request.project_name,
-                &dir_name,
-                Some(identity),
-            );
-        }
-
         if has_live {
-            // Step 3: identity match among live paths — distinct project
-            // named `<repo>@<dir>` (with a deterministic suffix if taken).
             let repo_short = repo_short_name(identity);
             let base = format!("{repo_short}@{dir_name}");
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
             let project = storage.create_project(&candidate, None)?;
-            let repo = storage.add_repo(&project.id, &sanitize(&dir_name), repo_root_str)?;
-            storage.set_repo_git_url(&repo.id, identity)?;
-            let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
-                LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
-            })?;
+            let repo = add_repo_row(
+                storage,
+                &project.id,
+                &dir_name,
+                repo_root_str,
+                Some(identity),
+            )?;
             return Ok(ResolvedRepo { project, repo });
         }
     }
@@ -190,6 +207,44 @@ pub fn register(
         &dir_name,
         identity,
     )
+}
+
+/// Shared "add repo row, stamp identity, re-read" sequence for the fresh
+/// registration paths (steps 2, 3, and 4). The re-read is necessary because
+/// the row returned by `add_repo` is a hand-built struct that never carries
+/// `git_url`, so we reflect the stamp from storage.
+fn add_repo_row(
+    storage: &dyn Storage,
+    project_id: &str,
+    dir_name: &str,
+    repo_root_str: &str,
+    identity: Option<&str>,
+) -> crate::Result<Repository> {
+    let repo = storage.add_repo(project_id, &sanitize(dir_name), repo_root_str)?;
+    if let Some(key) = identity {
+        storage.set_repo_git_url(&repo.id, key)?;
+    }
+    // Re-read: the row returned by `add_repo` is a hand-built struct that
+    // never carries `git_url`, so reflect the stamp from storage.
+    storage.get_repo(&repo.id)?.ok_or_else(|| {
+        LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
+    })
+}
+
+/// Shared fresh-registration path: create the project, add the repo row, and
+/// (if derivable) stamp the git_url. Used for step 2 (identity match among
+/// vanished paths) and step 4 (no match).
+fn register_fresh(
+    storage: &dyn Storage,
+    repo_root_str: &str,
+    project_name: Option<&str>,
+    dir_name: &str,
+    identity: Option<&str>,
+) -> crate::Result<ResolvedRepo> {
+    let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
+    let project = storage.create_project(&project_name, None)?;
+    let repo = add_repo_row(storage, &project.id, dir_name, repo_root_str, identity)?;
+    Ok(ResolvedRepo { project, repo })
 }
 
 /// Backfill `git_url` on a path-matched row when it is NULL and a derivable
@@ -265,30 +320,6 @@ fn find_other_repo_by_git_url(
         }
     }
     Ok(None)
-}
-
-/// Shared fresh-registration path: create the project, add the repo row, and
-/// (if derivable) stamp the git_url. Used for step 2 (identity match among
-/// vanished paths) and step 4 (no match).
-fn register_fresh(
-    storage: &dyn Storage,
-    repo_root_str: &str,
-    project_name: Option<&str>,
-    dir_name: &str,
-    identity: Option<&str>,
-) -> crate::Result<ResolvedRepo> {
-    let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
-    let project = storage.create_project(&project_name, None)?;
-    let repo = storage.add_repo(&project.id, &sanitize(dir_name), repo_root_str)?;
-    if let Some(key) = identity {
-        storage.set_repo_git_url(&repo.id, key)?;
-    }
-    // Re-read: the row returned by `add_repo` is a hand-built struct that
-    // never carries `git_url`, so reflect the stamp from storage.
-    let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
-        LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
-    })?;
-    Ok(ResolvedRepo { project, repo })
 }
 
 /// Resolve the project name for a fresh registration.
@@ -407,7 +438,9 @@ fn path_exists(local_path: &str) -> bool {
 /// Strip control characters from a value that will be interpolated into a
 /// user-facing stderr notice (terminal-safety: a hostile identity key or
 /// stored path containing ANSI/escape sequences would otherwise be written
-/// to the terminal raw).
-fn sanitize(value: &str) -> String {
+/// to the terminal raw). Exported so the CLI handlers (which interpolate
+/// stored project/repo names, paths and identities into their own notices)
+/// sanitize at the same boundary.
+pub fn sanitize(value: &str) -> String {
     value.chars().filter(|c| !c.is_control()).collect()
 }

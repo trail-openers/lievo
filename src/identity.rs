@@ -14,6 +14,11 @@ use crate::config::RepoConfig;
 /// canonical path.
 const SUPPORTED_SCHEMES: [&str; 3] = ["https", "ssh", "git"];
 
+/// Upper bound (in bytes) for an identity key. Keys are `host/owner/repo`
+/// URL shapes; anything longer is not a real remote (or an adversarial
+/// override) and is rejected rather than persisted or printed.
+const MAX_KEY_LEN: usize = 512;
+
 /// Default ports per scheme where an explicit port is redundant and dropped
 /// from the key. Any other port is preserved as a distinguishing part.
 const STANDARD_PORTS: [(&str, u16); 3] = [("https", 443), ("ssh", 22), ("git", 9418)];
@@ -114,6 +119,14 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
         return None;
     }
 
+    // Length bound (issue #29): a key longer than `MAX_KEY_LEN` bytes is not
+    // a real remote shape — reject it so an adversarial remote URL cannot
+    // persist or print an unbounded identity key.
+    let key_len = key_host.len() + repo_path.len() + repo_path.matches('/').count();
+    if key_len > MAX_KEY_LEN {
+        return None;
+    }
+
     Some(format!("{key_host}/{repo_path}"))
 }
 
@@ -138,7 +151,12 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
         // rejects such values at config load. Control characters are
         // rejected at the same boundary (they must not reach storage or
         // terminal output).
-        if has_forbidden_segment(key) || key.chars().any(|c| c.is_control()) {
+        if has_forbidden_segment(key)
+            || key.chars().any(|c| c.is_control())
+            || key.len() > MAX_KEY_LEN
+        {
+            // Length bound (issue #29): overrides above `MAX_KEY_LEN` bytes
+            // are rejected, matching `normalize_origin_url`.
             return None;
         }
         return Some(key.to_ascii_lowercase());
@@ -379,6 +397,37 @@ mod tests {
         // an identity key, matching `RepoConfig::validate`'s rejection.
         let tmp = TempDir::new().unwrap();
         let config = default_config_with_identity("github.com/owner/\u{001b}[31mrepo");
+        let identity = derive_identity(tmp.path(), &config);
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn test_normalize_origin_url_key_longer_than_512_bytes_returns_none() {
+        // A path whose `host/owner/repo` key exceeds 512 bytes must be
+        // rejected (issue #29: identity keys are length-bounded).
+        let long_segment = "a".repeat(700);
+        let url = format!("git@github.com:owner/{long_segment}");
+        assert_eq!(
+            normalize_origin_url(&url),
+            None,
+            "keys longer than 512 bytes must normalize to None"
+        );
+        // 512 bytes or under is still accepted.
+        let short_segment = "a".repeat(400);
+        let url = format!("git@github.com:owner/{short_segment}");
+        assert_eq!(
+            normalize_origin_url(&url).as_deref(),
+            Some(format!("github.com/owner/{short_segment}").as_str()),
+            "a key within the 512-byte bound must still normalize"
+        );
+    }
+
+    #[test]
+    fn test_derive_identity_override_longer_than_512_bytes_returns_none() {
+        // A config override above 512 bytes is rejected (issue #29), matching
+        // `RepoConfig::validate`'s rejection at config load.
+        let tmp = TempDir::new().unwrap();
+        let config = default_config_with_identity(&"a".repeat(700));
         let identity = derive_identity(tmp.path(), &config);
         assert!(identity.is_none());
     }

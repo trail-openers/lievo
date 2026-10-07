@@ -334,7 +334,8 @@ impl RepoConfig {
         // fields (issue #28, epic #24). Dot/empty segments (`..`, `.`,
         // `a//b`) are path-traversal vectors and are rejected too, as are
         // control characters, which must not reach storage or terminal
-        // output (issue #29).
+        // output (issue #29). A key longer than 512 bytes is not a real
+        // remote shape and is rejected as well (issue #29).
         if let Some(identity) = &self.identity {
             let trimmed = identity.trim();
             if trimmed.is_empty()
@@ -342,11 +343,12 @@ impl RepoConfig {
                     .split('/')
                     .any(|seg| seg.is_empty() || seg == "." || seg == "..")
                 || identity.chars().any(|c| c.is_control())
+                || identity.len() > 512
             {
                 return Err(LievoError::InvalidConfig {
                     path: ".lievo/config.yaml".to_string(),
                     reason: format!(
-                        "identity '{identity}' must not be empty and must not contain empty, '.' or '..' path segments or control characters"
+                        "identity '{identity}' must not be empty, must be 512 bytes or fewer, and must not contain empty, '.' or '..' path segments or control characters"
                     ),
                 });
             }

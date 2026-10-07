@@ -610,3 +610,82 @@ fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
         "the new row must carry its own derived identity"
     );
 }
+
+/// Issue #29 (lens fix): an explicit project name whose project already
+/// holds a repo with the SAME identity at a different path must still attach
+/// (the user explicitly asked for that name), adding a second repo row
+/// without touching the original row.
+#[test]
+fn test_add_repo_handler_explicit_project_same_identity_attaches_and_notices() {
+    let s = storage();
+    let proj = s.create_project("same-identity-proj", None).unwrap();
+    let dir1 = git_dir_with_remote("git@github.com:owner-a/repo");
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+    s.set_repo_git_url(&repo1.id, "github.com/owner-a/repo")
+        .unwrap();
+
+    // A different checkout of the same identity at a different path, added
+    // explicitly under the existing project's name.
+    let dir2 = git_dir_with_remote("git@github.com:owner-a/repo");
+    add_repo(&s, dir2.path(), Some("same-identity-proj")).unwrap();
+
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1, "must not create a duplicate project");
+    let repos = s.list_repos(&proj.id).unwrap();
+    assert_eq!(
+        repos.len(),
+        2,
+        "a second repo row must attach to the project"
+    );
+
+    let by_path: std::collections::HashMap<&str, &lievo::model::Repository> =
+        repos.iter().map(|r| (r.local_path.as_str(), r)).collect();
+    let old = by_path
+        .get(dir1.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("original row at dir1 missing from project repos"));
+    assert_eq!(
+        old.id, repo1.id,
+        "the original row must be untouched (id unchanged)"
+    );
+    assert_eq!(old.local_path, dir1.path().to_str().unwrap());
+    assert_eq!(
+        old.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the original row's git_url must be unchanged"
+    );
+    let new = by_path
+        .get(dir2.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("new row at dir2 missing from project repos"));
+    assert_ne!(new.id, repo1.id);
+    assert_eq!(new.project_id, proj.id);
+    assert_eq!(
+        new.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the new row must carry the same identity"
+    );
+}
+
+/// Issue #29 (lens fix): an explicit project name that is empty or
+/// whitespace-only is rejected as invalid input up front.
+#[test]
+fn test_add_repo_handler_explicit_project_empty_name_rejected() {
+    let s = storage();
+    let dir = git_dir();
+    for bad_name in ["", "   ", "\t"] {
+        let result = add_repo(&s, dir.path(), Some(bad_name));
+        match result {
+            Err(lievo::LievoError::InvalidInput(msg)) => assert!(
+                msg.contains("project name"),
+                "error must name the project-name problem: {msg}"
+            ),
+            other => panic!("expected InvalidInput for explicit name {bad_name:?}, got {other:?}"),
+        }
+    }
+    // Nothing must have been persisted by the failed attempts.
+    assert!(
+        s.list_projects().unwrap().is_empty(),
+        "no project may be created"
+    );
+}
