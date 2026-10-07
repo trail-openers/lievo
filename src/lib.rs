@@ -28,6 +28,8 @@ pub mod output;
 pub mod project_resolution;
 /// Query API: entity lookup, dependency traversal, and impact analysis.
 pub mod query;
+/// Shared repository registration entry point (issue #29): one `register` used by both MCP and CLI.
+pub mod registration;
 
 /// Single process-wide lock for every in-crate test that mutates or reads
 /// environment variables (issue #863). `std::env::set_var` is process-global
