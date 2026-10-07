@@ -5,7 +5,7 @@
 // NOTE: Clap outputs help messages to stdout, not stderr. All help assertions
 // check stdout. Error messages go to stderr.
 
-mod common;
+pub mod common;
 
 // ---------------------------------------------------------------------------
 // Admin command group tests

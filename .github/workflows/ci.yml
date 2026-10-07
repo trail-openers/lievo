@@ -50,14 +50,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Integration test (pinned fixture repo, #809)
-        run: |
-          TMP_FIXTURE=$(mktemp -d)
-          cp -r tests/fixtures/sample_repo/* "$TMP_FIXTURE/"
-          git -C "$TMP_FIXTURE" init -q
-          git -C "$TMP_FIXTURE" add -A
-          git -C "$TMP_FIXTURE" -c user.email=ci@lievo.dev -c user.name=CI commit -q -m fixture
-          LIEVO_TEST_REPO="$TMP_FIXTURE" cargo test --test integration_test
-          rm -rf "$TMP_FIXTURE"
+        run: cargo test --test integration_test
 
       - name: Tests (lib unit tests)
         run: cargo test --lib

@@ -88,27 +88,6 @@ impl<S: Storage + Send> Tool for GetEntityTool<S> {
         "get_entity"
     }
 
-    fn description(&self) -> &str {
-        "Get full details for a single entity including summary, metrics, and tier. Use entity IDs returned by search_entities or list_subsystems. Set include_children=true to fetch structural children (for modules/subsystems). This replaces get_module_details. For Module-tier entities, include_children=true also returns nested Function grandchildren under each File child."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "Entity ID from search_entities or list_subsystems results."
-                },
-                "include_children": {
-                    "type": "boolean",
-                    "description": "If true, returns direct children of this entity (useful for modules/subsystems). Default: false."
-                }
-            },
-            "required": ["entity_id"]
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let entity_id = input
             .get("entity_id")
@@ -200,17 +179,6 @@ impl<S: Storage + Send> Tool for GetEntityTool<S> {
 impl<S: Storage + Send> Tool for ListSubsystemsTool<S> {
     fn name(&self) -> &str {
         "list_subsystems"
-    }
-
-    fn description(&self) -> &str {
-        "List all top-level subsystems. Use FIRST when asked about architecture or project overview."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {}
-        })
     }
 
     fn call(&self, _input: Value) -> crate::Result<String> {

@@ -13,15 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Locate the pre-built lievo binary (built by `cargo test` before the
-/// integration tests execute).
-fn lievo_bin() -> PathBuf {
-    let exe = std::env::current_exe().expect("current_exe");
-    // <workspace>/target/debug/deps/<test>-<hash>
-    //   -> parent: deps, parent: debug
-    let debug = exe.parent().and_then(|p| p.parent()).expect("debug dir");
-    debug.join("lievo")
-}
+pub mod common;
 
 /// Run a single lievo binary invocation against an isolated database file.
 fn run_once(bin: &PathBuf, db: &PathBuf, args: &[&str]) -> (String, String, i32) {
@@ -48,51 +40,10 @@ fn run_session(args: &[&[&str]]) -> Vec<(String, String, i32)> {
     let _ = fs::remove_file(&db);
     let results = args
         .iter()
-        .map(|a| run_once(&lievo_bin(), &db, a))
+        .map(|a| run_once(&common::lievo_bin(), &db, a))
         .collect::<Vec<_>>();
     let _ = fs::remove_file(&db);
     results
-}
-
-/// Copy the sample_repo fixture to a fresh temp dir and initialize it as a
-/// standalone git repo with a single commit (the in-tree copy has no .git —
-/// `add-repo` requires a git working tree). Unique path per invocation so
-/// parallel tests never collide.
-fn fixture_repo() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let src = PathBuf::from("tests/fixtures/sample_repo");
-    let dst = std::env::temp_dir().join(format!("lievo-cov-fixture-{pid}-{n}"));
-    let _ = fs::remove_dir_all(&dst);
-    copy_recursive(&src, &dst);
-    let git = git2::Repository::init(&dst).expect("git init on fixture copy");
-    let mut index = git.index().expect("git index");
-    index
-        .add_all(["**"], git2::IndexAddOption::DEFAULT, None)
-        .expect("stage fixture files");
-    index.write().expect("write index");
-    let tree_oid = index.write_tree().expect("write tree");
-    let tree = git.find_tree(tree_oid).expect("find tree");
-    let sig = git2::Signature::now("lievo-test", "lievo@test").expect("signature");
-    let _ = git
-        .commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &[])
-        .expect("commit fixture");
-    dst
-}
-
-fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
-    for entry in fs::read_dir(src).expect("read fixture dir") {
-        let entry = entry.expect("fixture entry");
-        let target = dst.join(entry.file_name());
-        if entry.file_type().expect("fixture entry type").is_dir() {
-            let _ = fs::create_dir_all(&target);
-            copy_recursive(&entry.path(), &target);
-        } else {
-            let _ = fs::copy(entry.path(), &target);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +53,7 @@ fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
 #[test]
 fn test_admin_help_lists_coverage() {
     let (stdout, _stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &PathBuf::from("does-not-exist.db"),
         &["admin", "--help"],
     );
@@ -116,7 +67,7 @@ fn test_admin_help_lists_coverage() {
 #[test]
 fn test_admin_coverage_help_shows_project_option() {
     let (stdout, _stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &PathBuf::from("does-not-exist.db"),
         &["admin", "coverage", "--help"],
     );
@@ -139,8 +90,8 @@ fn test_admin_coverage_help_shows_project_option() {
 /// isolated project, then run `admin coverage` in the same session.
 /// Returns the three results: create-project, add-repo, coverage.
 fn coverage_session(project: &str, coverage_args: &[&str]) -> Vec<(String, String, i32)> {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let mut args: Vec<Vec<String>> = Vec::new();
     args.push(vec![
         "admin".to_string(),

@@ -28,23 +28,6 @@ impl<S: Storage + Send> Tool for GetConventionsTool<S> {
         "get_conventions"
     }
 
-    fn description(&self) -> &str {
-        "Get detected coding conventions and patterns. \
-         Use when asked about code style or best practices."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "description": "Optional category filter"
-                }
-            }
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let category = input.get("category").and_then(|v| v.as_str());
 
@@ -96,27 +79,6 @@ impl<S: Storage + Send> Tool for GetInsightsTool<S> {
         "get_insights"
     }
 
-    fn description(&self) -> &str {
-        "Get architectural insights like coupling hotspots and complexity warnings. \
-         Use when asked about code quality."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "description": "Optional category filter"
-                },
-                "severity": {
-                    "type": "string",
-                    "description": "Filter: critical, high, medium, low"
-                }
-            }
-        })
-    }
-
     fn call(&self, input: Value) -> crate::Result<String> {
         let category = input.get("category").and_then(|v| v.as_str());
         let severity = input.get("severity").and_then(|v| v.as_str());
@@ -148,31 +110,6 @@ impl<S: Storage + Send> Tool for GetInsightsTool<S> {
 impl<S: Storage + Send> Tool for GetExecutionFlowsTool<S> {
     fn name(&self) -> &str {
         "get_execution_flows"
-    }
-
-    fn description(&self) -> &str {
-        "Get precomputed execution flows showing call sequences from entry points. \
-          Use when asked about how functions are called or what the execution path is."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "entry_point": {
-                    "type": "string",
-                    "description": "Optional substring filter on flow entry point name or path (case-insensitive)"
-                },
-                "max_depth": {
-                    "type": "integer",
-                    "description": "Maximum traversal depth for flow tracing (default 20)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of flows to return (default: unlimited)"
-                }
-            }
-        })
     }
 
     fn call(&self, input: Value) -> crate::Result<String> {
@@ -269,18 +206,6 @@ impl Tool for ListProjectDocsTool {
         "list_project_docs"
     }
 
-    fn description(&self) -> &str {
-        "List all discovered project documentation files with their sizes. \
-         Use to discover what documentation is available, then use read_project_doc to read specific files."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {}
-        })
-    }
-
     fn call(&self, _input: Value) -> crate::Result<String> {
         let result: Vec<Value> = self
             .docs
@@ -304,32 +229,6 @@ impl Tool for ListProjectDocsTool {
 impl Tool for ReadProjectDocTool {
     fn name(&self) -> &str {
         "read_project_doc"
-    }
-
-    fn description(&self) -> &str {
-        "Read a project documentation file by path. \
-         Pass the 'path' field exactly as returned by list_project_docs. \
-         Returns raw file content by default (format='raw'); \
-         pass format='structured' for extracted headings, decisions, terminology, and config_values."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path from list_project_docs results — must match exactly as returned.",
-                },
-                "format": {
-                    "type": "string",
-                    "description": "Output format. 'raw' returns verbatim file content (default). 'structured' returns extracted fields: headings, decisions, terminology, config_values.",
-                    "enum": ["raw", "structured"],
-                    "default": "raw"
-                }
-            },
-            "required": ["path"]
-        })
     }
 
     fn call(&self, input: Value) -> crate::Result<String> {

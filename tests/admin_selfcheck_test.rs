@@ -18,15 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Locate the pre-built lievo binary (built by `cargo test` before the
-/// integration tests execute).
-fn lievo_bin() -> PathBuf {
-    let exe = std::env::current_exe().expect("current_exe");
-    // <workspace>/target/debug/deps/<test>-<hash>
-    //   -> parent: deps, parent: debug
-    let debug = exe.parent().and_then(|p| p.parent()).expect("debug dir");
-    debug.join("lievo")
-}
+pub mod common;
 
 /// Run a single lievo binary invocation against an isolated database file.
 fn run_once(bin: &PathBuf, db: &PathBuf, args: &[&str]) -> (String, String, i32) {
@@ -51,7 +43,7 @@ fn run_session(args: &[Vec<String>]) -> Vec<(String, String, i32)> {
     let pid = std::process::id();
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-db-{pid}-{n}.db"));
     let _ = fs::remove_file(&db);
-    let bin = lievo_bin();
+    let bin = common::lievo_bin();
     let results = args
         .iter()
         .map(|a| {
@@ -61,58 +53,6 @@ fn run_session(args: &[Vec<String>]) -> Vec<(String, String, i32)> {
         .collect::<Vec<_>>();
     let _ = fs::remove_file(&db);
     results
-}
-
-/// Copy the sample_repo fixture to a fresh temp dir and initialize it as a
-/// standalone git repo with a single commit (the in-tree copy has no .git —
-/// `add-repo` requires a git working tree). Unique path per invocation so
-/// parallel tests never collide.
-fn fixture_repo() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let src = PathBuf::from("tests/fixtures/sample_repo");
-    let dst = std::env::temp_dir().join(format!("lievo-selfcheck-fixture-{pid}-{n}"));
-    let _ = fs::remove_dir_all(&dst);
-    copy_recursive(&src, &dst);
-    let git = git2::Repository::init(&dst).expect("git init on fixture copy");
-    // `git2::Repository::init` may default HEAD to `refs/heads/master`
-    // regardless of the caller's `init.defaultBranch` git config (it does
-    // not read that config outside a real `git init` process invocation).
-    // The commit below is created on `refs/heads/main` explicitly, so HEAD
-    // must point there too — otherwise `lievo refresh`'s `is_stale()` sees
-    // an `UnbornBranch` on the (uncommitted) master branch and silently
-    // treats the freshly-added repo as "already up to date", skipping
-    // analysis/indexing entirely (issue #715: the storage-backed selfcheck
-    // sections need a real index, so this must be pinned correctly here).
-    git.set_head("refs/heads/main")
-        .expect("point HEAD at refs/heads/main before the fixture commit");
-    let mut index = git.index().expect("git index");
-    index
-        .add_all(["**"], git2::IndexAddOption::DEFAULT, None)
-        .expect("stage fixture files");
-    index.write().expect("write index");
-    let tree_oid = index.write_tree().expect("write tree");
-    let tree = git.find_tree(tree_oid).expect("find tree");
-    let sig = git2::Signature::now("lievo-test", "lievo@test").expect("signature");
-    let _ = git
-        .commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &[])
-        .expect("commit fixture");
-    dst
-}
-
-fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
-    for entry in fs::read_dir(src).expect("read fixture dir") {
-        let entry = entry.expect("fixture entry");
-        let target = dst.join(entry.file_name());
-        if entry.file_type().expect("fixture entry type").is_dir() {
-            let _ = fs::create_dir_all(&target);
-            copy_recursive(&entry.path(), &target);
-        } else {
-            let _ = fs::copy(entry.path(), &target);
-        }
-    }
 }
 
 fn args(parts: &[&str]) -> Vec<String> {
@@ -184,7 +124,7 @@ fn resolved_import_edges_by_path(repo: &Path) -> Vec<(String, String)> {
 #[test]
 fn test_admin_help_lists_selfcheck() {
     let (stdout, _stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &PathBuf::from("does-not-exist.db"),
         &["admin", "--help"],
     );
@@ -198,7 +138,7 @@ fn test_admin_help_lists_selfcheck() {
 #[test]
 fn test_admin_selfcheck_help_documents_flags() {
     let (stdout, _stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &PathBuf::from("does-not-exist.db"),
         &["admin", "selfcheck", "--help"],
     );
@@ -228,12 +168,12 @@ fn test_admin_selfcheck_help_documents_flags() {
 
 #[test]
 fn test_selfcheck_pure_sections_pass_on_clean_fixture() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-pure-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &["admin", "selfcheck", "--repo", repo_arg, "--gate"],
     );
@@ -268,12 +208,12 @@ fn test_selfcheck_pure_sections_pass_on_clean_fixture() {
 /// the in-tree fixture.
 #[test]
 fn test_selfcheck_nested_module_edge_is_not_wrong() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-nested-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &["admin", "selfcheck", "--repo", repo_arg, "--gate"],
     );
@@ -291,7 +231,7 @@ fn test_selfcheck_nested_module_edge_is_not_wrong() {
     // empty resolved_by_path would also make the gate pass (0.0 rate), so
     // the --gate exit-0 alone is not sufficient proof the fixture is
     // exercising the nested path.
-    let edges = resolved_import_edges_by_path(&repo_path);
+    let edges = resolved_import_edges_by_path(fixture.path());
     assert!(
         edges
             .iter()
@@ -311,12 +251,12 @@ fn test_selfcheck_nested_module_edge_is_not_wrong() {
 /// production extractor does not yet handle — see issue #732).
 #[test]
 fn test_selfcheck_path_module_edge_is_not_wrong() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-path-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &["admin", "selfcheck", "--repo", repo_arg, "--gate"],
     );
@@ -334,7 +274,7 @@ fn test_selfcheck_path_module_edge_is_not_wrong() {
     // empty resolved_by_path would also make the gate pass (0.0 rate), so
     // the --gate exit-0 alone is not sufficient proof the fixture is
     // exercising the #[path] path.
-    let edges = resolved_import_edges_by_path(&repo_path);
+    let edges = resolved_import_edges_by_path(fixture.path());
     assert!(
         edges
             .iter()
@@ -345,15 +285,15 @@ fn test_selfcheck_path_module_edge_is_not_wrong() {
 
 #[test]
 fn test_selfcheck_gate_fails_on_edge_correctness_breach() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-edge-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     // A negative threshold is impossible to satisfy (wrong_edge_rate is
     // always >= 0.0), forcing a deterministic edge_correctness breach
     // without depending on the fixture actually containing a wrong edge.
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &[
             "admin",
@@ -377,7 +317,7 @@ fn test_selfcheck_gate_fails_on_edge_correctness_breach() {
     // Without --gate the same breach only reports and must exit 0 — the
     // gate must not break reporting mode.
     let (out2, err2, status2) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &PathBuf::from("does-not-exist-2.db"),
         &[
             "admin",
@@ -395,8 +335,8 @@ fn test_selfcheck_gate_fails_on_edge_correctness_breach() {
 
 #[test]
 fn test_selfcheck_gate_fails_on_false_zero_callers_breach() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-fzc-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     // false_zero_callers is a usize count (can't go negative), so a
@@ -407,7 +347,7 @@ fn test_selfcheck_gate_fails_on_false_zero_callers_breach() {
     // (The section's own breach behaviour — count > threshold => fail — is
     // covered by the pure unit tests in selfcheck_false_zero_tests.rs.)
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &[
             "admin",
@@ -436,12 +376,12 @@ fn test_selfcheck_gate_fails_on_false_zero_callers_breach() {
 
 #[test]
 fn test_selfcheck_json_output_contract() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-json-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &["admin", "selfcheck", "--repo", repo_arg, "--format", "json"],
     );
@@ -578,7 +518,13 @@ fn indexed_selfcheck_session(
     probes_content: &str,
     selfcheck_extra: &[&str],
 ) -> (Vec<(String, String, i32)>, PathBuf) {
-    indexed_selfcheck_session_for_repo(project, fixture_repo(), probes_content, selfcheck_extra)
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    indexed_selfcheck_session_for_repo(
+        project,
+        fixture.path().to_path_buf(),
+        probes_content,
+        selfcheck_extra,
+    )
 }
 
 /// Same as [`indexed_selfcheck_session`] but indexes an arbitrary repo path
@@ -815,8 +761,8 @@ fn test_selfcheck_probes_file_hits_lievos_own_tree() {
 
 #[test]
 fn test_selfcheck_probe_sections_skipped_without_project_even_with_probes_file() {
-    let repo_path = fixture_repo();
-    let repo_arg = repo_path.to_str().expect("fixture path is utf-8");
+    let fixture = common::prepare_fixture_repo().expect("prepare fixture repo");
+    let repo_arg = fixture.path().to_str().expect("fixture path is utf-8");
     let probes_path = std::env::temp_dir().join(format!(
         "lievo-selfcheck-noproj-probes-{}.tsv",
         std::process::id()
@@ -827,7 +773,7 @@ fn test_selfcheck_probe_sections_skipped_without_project_even_with_probes_file()
     let db = std::env::temp_dir().join(format!("lievo-selfcheck-noproj-{}.db", std::process::id()));
     let _ = fs::remove_file(&db);
     let (stdout, stderr, status) = run_once(
-        &lievo_bin(),
+        &common::lievo_bin(),
         &db,
         &[
             "admin",
