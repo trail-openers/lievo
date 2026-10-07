@@ -4,17 +4,17 @@
 //! walked up to the git work-tree root via `git2::Repository::discover`.
 //!
 //! Issue #29: the registration entry point itself lives in the neutral
-//! `crate::registration` module (`register` / `RegistrationRequest`). This
-//! module keeps path resolution (`resolve_project_root`), the cross-project
-//! `find_repo_by_path` lookup, and `resolve_or_register`, which delegates to
-//! `register`. The lookup order is path match → identity match among
+//! `crate::registration` module (`register` / `RegistrationRequest` / the
+//! cross-project `find_repo_by_path` lookup). This module keeps path
+//! resolution (`resolve_project_root`) and `resolve_or_register`, which
+//! delegates to `register`. `find_repo_by_path` is re-exported from
+//! `crate::registration` here for backwards-compatible imports. The lookup order is path match → identity match among
 //! vanished paths (register fresh until move handling from issue #30 lands)
 //! → identity match among live paths (register a distinct `<repo>@<dir>`
 //! project) → fresh registration.
 
 use std::path::{Path, PathBuf};
 
-use crate::model::Repository;
 use crate::storage::Storage;
 
 /// Where the resolved repository root came from.
@@ -120,25 +120,11 @@ pub fn resolve_project_root_from(start_dir: &Path) -> Result<ResolvedRepoRoot, N
     }
 }
 
-/// Find a registered repo whose canonical `local_path` matches `path`,
-/// across ALL projects (issue #863 decision 1).
-pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Option<Repository>> {
-    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    for project in storage.list_projects()? {
-        for repo in storage.list_repos(&project.id)? {
-            let stored = Path::new(&repo.local_path);
-            let canon = stored.canonicalize().ok();
-            if stored == path
-                || stored == target
-                || canon.as_deref() == Some(path)
-                || canon.as_deref() == Some(target.as_path())
-            {
-                return Ok(Some(repo));
-            }
-        }
-    }
-    Ok(None)
-}
+/// Cross-project path lookup, now owned by the neutral `crate::registration`
+/// module (issue #29: the registration layer must not depend on `mcp`).
+/// Re-exported so existing `mcp::repo_resolution::find_repo_by_path` imports
+/// keep compiling.
+pub use crate::registration::find_repo_by_path;
 
 /// A project and its repository.
 pub type ResolvedRepo = crate::registration::ResolvedRepo;

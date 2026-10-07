@@ -332,18 +332,21 @@ impl RepoConfig {
         // shape) — an empty or whitespace-only value would silently produce
         // a wrong key, so it is a hard error like the other Option<String>
         // fields (issue #28, epic #24). Dot/empty segments (`..`, `.`,
-        // `a//b`) are path-traversal vectors and are rejected too.
+        // `a//b`) are path-traversal vectors and are rejected too, as are
+        // control characters, which must not reach storage or terminal
+        // output (issue #29).
         if let Some(identity) = &self.identity {
             let trimmed = identity.trim();
             if trimmed.is_empty()
                 || trimmed
                     .split('/')
                     .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+                || identity.chars().any(|c| c.is_control())
             {
                 return Err(LievoError::InvalidConfig {
                     path: ".lievo/config.yaml".to_string(),
                     reason: format!(
-                        "identity '{identity}' must not be empty and must not contain empty, '.' or '..' path segments"
+                        "identity '{identity}' must not be empty and must not contain empty, '.' or '..' path segments or control characters"
                     ),
                 });
             }

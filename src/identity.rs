@@ -47,8 +47,16 @@ fn has_forbidden_segment(path: &str) -> bool {
 ///
 /// Returns `Some("host/owner/repo")` — lowercase host, no `.git` suffix, no
 /// credentials, no user, no explicit standard port — or `None` when the URL
-/// is unparseable, uses an unsupported scheme, or lacks an owner/repo shape.
+/// is unparseable, uses an unsupported scheme, contains a control character,
+/// or lacks an owner/repo shape.
 pub fn normalize_origin_url(url: &str) -> Option<String> {
+    // Control characters (ANSI escapes, internal newlines, NUL, ...) in a
+    // remote URL must never survive into an identity key: they would render
+    // raw in terminal output or corrupt downstream parsing. Checked before
+    // trimming so a trailing newline cannot mask an embedded control char.
+    if url.chars().any(|c| c.is_control()) {
+        return None;
+    }
     let url = url.trim();
     if url.is_empty() {
         return None;
@@ -127,8 +135,10 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
         let key = override_key.trim();
         // Defensive: a stored override with a traversal or empty segment
         // must never become an identity key, even though `validate()`
-        // rejects such values at config load.
-        if has_forbidden_segment(key) {
+        // rejects such values at config load. Control characters are
+        // rejected at the same boundary (they must not reach storage or
+        // terminal output).
+        if has_forbidden_segment(key) || key.chars().any(|c| c.is_control()) {
             return None;
         }
         return Some(key.to_ascii_lowercase());
@@ -150,7 +160,9 @@ mod tests {
     use tempfile::TempDir;
 
     /// Table-driven cases: every URL form in the issue's edge-case list must
-    /// collapse to the same key `github.com/owner/repo`.
+    /// collapse to the same key `github.com/owner/repo`. Control characters
+    /// (newlines in particular) are rejected before trimming, so URLs with
+    /// a trailing newline must use their clean form here.
     #[test]
     fn test_normalize_origin_url_all_spellings_collapse_to_one_key() {
         let expected = "github.com/owner/repo";
@@ -178,6 +190,8 @@ mod tests {
             "git@GitHub.com:owner/repo",
             // trailing slash variants
             "ssh://git@github.com/owner/repo/",
+            // trailing whitespace is still trimmed (control chars are not)
+            "https://github.com/owner/repo ",
         ];
 
         for url in &cases {
@@ -282,6 +296,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_normalize_origin_url_contains_control_chars_returns_none() {
+        // Control characters (ANSI escapes, newlines, NUL) in a remote URL
+        // must never leak into an identity key.
+        for url in [
+            "git@github.com:owner/repo\u{001b}[31m",
+            "https://github.com/owner/repo\n",
+            "https://github.com/owner/\u{0}/repo",
+            "ssh://github.com/owner\t/repo",
+        ] {
+            assert!(
+                normalize_origin_url(url).is_none(),
+                "URL with control characters must normalize to None"
+            );
+        }
+    }
+
     // --- derive_identity ---
 
     /// Build a tempdir git repo with an origin remote set to `url`.
@@ -338,6 +369,16 @@ mod tests {
         // directly) with a traversal segment must not become a key.
         let tmp = TempDir::new().unwrap();
         let config = default_config_with_identity("github.com/../evil/repo");
+        let identity = derive_identity(tmp.path(), &config);
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn test_derive_identity_override_with_control_chars_returns_none() {
+        // Defensive: an override carrying control characters must not become
+        // an identity key, matching `RepoConfig::validate`'s rejection.
+        let tmp = TempDir::new().unwrap();
+        let config = default_config_with_identity("github.com/owner/\u{001b}[31mrepo");
         let identity = derive_identity(tmp.path(), &config);
         assert!(identity.is_none());
     }

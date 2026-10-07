@@ -19,9 +19,10 @@ mod doctor_render;
 use std::path::{Path, PathBuf};
 
 use lievo::extraction::{lievo_data_dir, ts_index_dir_for_repo};
-use lievo::mcp::repo_resolution::{find_repo_by_path, resolve_project_root_from};
+use lievo::mcp::repo_resolution::resolve_project_root_from;
 use lievo::output::OutputFormat;
 use lievo::refresh::lock::{IndexingStatus, indexing_status};
+use lievo::registration::find_repo_by_path;
 use lievo::storage::Storage;
 use lievo::storage::sqlite::SqliteStorage;
 

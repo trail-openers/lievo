@@ -4,9 +4,8 @@ use std::path::Path;
 
 use super::json_escape;
 use lievo::config::RepoConfig;
-use lievo::mcp::repo_resolution::find_repo_by_path;
 use lievo::output::OutputFormat;
-use lievo::registration::{RegistrationRequest, register};
+use lievo::registration::{RegistrationRequest, find_repo_by_path, register};
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
 

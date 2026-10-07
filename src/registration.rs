@@ -1,9 +1,9 @@
 //! Shared repository registration (issue #29). One entry point,
-//! [`register`], used by both the MCP `resolve_or_register` routine (via
-//! `crate::mcp::repo_resolution`) and the CLI `add-repo` handler (via
-//! `lievo::registration::register`). The two paths previously diverged
-//! (MCP: path-only + blind suffixing; CLI: get-or-create-by-name); this
-//! module unifies them in a neutral location shared by both.
+//! [`register`], used by both the MCP `resolve_or_register` routine and the
+//! CLI `add-repo` handler. The two paths previously diverged (MCP: path-only
+//! + blind suffixing; CLI: get-or-create-by-name); this module unifies them
+//! in a neutral location shared by both. `crate::mcp::repo_resolution`
+//! delegates here and re-exports `find_repo_by_path` for compatibility.
 //!
 //! `register` owns the explicit-project-name conflict rule: an explicit name
 //! that exists and holds a repo whose stored non-NULL `git_url` differs from
@@ -47,7 +47,7 @@ pub struct RegistrationRequest<'a> {
 ///
 /// Lookup order (issue #29 acceptance criteria):
 /// 1. **Path match** — a repo already registered at this path (via
-///    `crate::mcp::repo_resolution::find_repo_by_path`'s canonicalisation).
+///    `find_repo_by_path`'s canonicalisation, defined in this module).
 ///    If that row's `git_url` is `NULL`, backfill it from the derived
 ///    identity (when derivable); a derived key that already belongs to
 ///    another repo logs the overlap and path match wins (no merge, no move).
@@ -79,20 +79,28 @@ pub fn register(
     storage: &dyn Storage,
     request: &RegistrationRequest,
 ) -> crate::Result<ResolvedRepo> {
+    // A non-UTF-8 repo root cannot be stored as `local_path`: reject it as
+    // invalid input rather than silently persisting an empty path.
+    let repo_root_str = request
+        .repo_root
+        .to_str()
+        .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
+
+    // Identity is derived once here and threaded through (no second call).
+    let identity = derive_identity(request.repo_root, request.config);
+
     // Step 1: path match.
-    if let Some(repo) = crate::mcp::repo_resolution::find_repo_by_path(storage, request.repo_root)?
-    {
+    if let Some(mut repo) = find_repo_by_path(storage, request.repo_root)? {
         let project = storage
             .get_project_by_id(&repo.project_id)?
             .ok_or_else(|| {
                 LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
             })?;
-        backfill_git_url(storage, &repo, request)?;
+        if backfill_git_url(storage, &repo, identity.as_deref())? {
+            repo.git_url = identity.clone();
+        }
         return Ok(ResolvedRepo { project, repo });
     }
-
-    // Identity is derived once here and threaded through (no second call).
-    let identity = derive_identity(request.repo_root, request.config);
 
     // Explicit-name conflict rule (owned by register, issue #29): an
     // explicit project name that exists and holds a repo with a stored
@@ -148,11 +156,7 @@ pub fn register(
             let base = format!("{repo_short}@{dir_name}");
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
             let project = storage.create_project(&candidate, None)?;
-            let repo = storage.add_repo(
-                &project.id,
-                &dir_name,
-                request.repo_root.to_str().unwrap_or(""),
-            )?;
+            let repo = storage.add_repo(&project.id, &dir_name, repo_root_str)?;
             storage.set_repo_git_url(&repo.id, identity)?;
             return Ok(ResolvedRepo { project, repo });
         }
@@ -166,19 +170,21 @@ pub fn register(
 /// identity exists. A changed on-disk origin on a path-matched row does NOT
 /// re-key: stored `git_url` governs identity, so a non-NULL stored value is
 /// left untouched. The identity key is passed in (derived once in
-/// `register`) rather than re-derived.
+/// `register`) rather than re-derived. Returns `true` when the backfill
+/// wrote the row's `git_url` (so the caller can reflect it in its result),
+/// `false` when there was nothing to backfill.
 fn backfill_git_url(
     storage: &dyn Storage,
     repo: &Repository,
-    request: &RegistrationRequest,
-) -> crate::Result<()> {
+    identity: Option<&str>,
+) -> crate::Result<bool> {
     if repo.git_url.is_some() {
-        return Ok(());
+        return Ok(false);
     }
-    let Some(key) = derive_identity(request.repo_root, request.config) else {
-        return Ok(());
+    let Some(key) = identity else {
+        return Ok(false);
     };
-    let other = find_other_repo_by_git_url(storage, &key, &repo.id)?;
+    let other = find_other_repo_by_git_url(storage, key, &repo.id)?;
     if let Some(other) = other {
         // Derived key already belongs to another repo. Log the overlap and
         // let path match win: no merge, no move, no backfill.
@@ -186,14 +192,37 @@ fn backfill_git_url(
             "identity overlap for path-matched repo '{}' ({}): derived identity '{}' is already owned by repo '{}' in project '{}'; path match wins, not merging",
             repo.name,
             repo.id,
-            sanitize(&key),
+            sanitize(key),
             other.id,
             other.project_id,
         );
-        return Ok(());
+        return Ok(false);
     }
-    storage.set_repo_git_url(&repo.id, &key)?;
-    Ok(())
+    storage.set_repo_git_url(&repo.id, key)?;
+    Ok(true)
+}
+
+/// Find a registered repo whose canonical `local_path` matches `path`,
+/// across ALL projects (issue #863 decision 1). Compares both the raw and
+/// the canonicalised form of the stored path against the raw and
+/// canonicalised form of `path`, so a symlinked or otherwise
+/// non-canonical lookup still matches.
+pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Option<Repository>> {
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for project in storage.list_projects()? {
+        for repo in storage.list_repos(&project.id)? {
+            let stored = Path::new(&repo.local_path);
+            let canon = stored.canonicalize().ok();
+            if stored == path
+                || stored == target
+                || canon.as_deref() == Some(path)
+                || canon.as_deref() == Some(target.as_path())
+            {
+                return Ok(Some(repo));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Find a repo OTHER than `except_id` that owns the given identity key.
@@ -223,11 +252,11 @@ fn register_fresh(
 ) -> crate::Result<ResolvedRepo> {
     let project_name = pick_fresh_project_name(storage, request, dir_name, identity)?;
     let project = storage.create_project(&project_name, None)?;
-    let repo = storage.add_repo(
-        &project.id,
-        dir_name,
-        request.repo_root.to_str().unwrap_or(""),
-    )?;
+    let repo_root_str = request
+        .repo_root
+        .to_str()
+        .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
+    let repo = storage.add_repo(&project.id, dir_name, repo_root_str)?;
     if let Some(key) = identity {
         storage.set_repo_git_url(&repo.id, key)?;
     }
