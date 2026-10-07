@@ -204,6 +204,21 @@ pub fn register(
                 LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
             })?;
         backfill_git_url(storage, &repo, request)?;
+        // When the CLI specified an explicit project name and the path-matched
+        // repo belongs to a different project, report the mismatch instead of
+        // silently returning the other project (finding 3).
+        if let Some(explicit) = request.project_name
+            && !explicit.is_empty()
+            && project.name != explicit
+        {
+            return Err(LievoError::InvalidInput(format!(
+                "path {} is already registered in project '{}', not the requested '{}'. \n\
+                 Use `lievo admin link-repo` to move it, or register a different path.",
+                request.repo_root.display(),
+                project.name,
+                explicit,
+            )));
+        }
         return Ok(ResolvedRepo { project, repo });
     }
 
@@ -223,18 +238,27 @@ pub fn register(
             // Step 2: identity match among vanished paths — hand off to move
             // handling (issue #30). Until that lands, register fresh with a
             // user-facing notice naming the vanished path.
+            let fresh = register_fresh(storage, request, &dir_name, Some(identity))?;
             eprintln!(
                 "registered '{}' as a fresh project (identity '{}' also appears at vanished path '{}'); move handling for re-cloned checkouts is a follow-up",
                 dir_name, identity, vanished.local_path,
             );
-            return register_fresh(storage, request, &dir_name, Some(identity));
+            return Ok(fresh);
         }
 
         if has_live {
             // Step 3: identity match among live paths — distinct project
             // named `<repo>@<dir>` (with a deterministic suffix if taken).
-            let repo_short = repo_short_name(identity);
-            let base = format!("{repo_short}@{dir_name}");
+            // When the CLI specified an explicit project name, use that name
+            // instead (finding 2).
+            let base = if let Some(explicit) = request.project_name
+                && !explicit.is_empty()
+            {
+                explicit.to_string()
+            } else {
+                let repo_short = repo_short_name(identity);
+                format!("{repo_short}@{dir_name}")
+            };
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
             let project = storage.create_project(&candidate, None)?;
             let repo = storage.add_repo(
