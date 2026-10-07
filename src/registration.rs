@@ -28,16 +28,15 @@ pub struct ResolvedRepo {
 /// `resolve_or_register` and the CLI `add-repo` (issue #29: one shared
 /// registration function). `project_name` is `None` for the MCP entry point
 /// (which has no explicit project argument) and `Some(name)` for a CLI
-/// invocation with an explicit project name. `config` carries the optional
-/// `identity:` override; a default `RepoConfig` derives identity purely from
-/// the repository's `origin` remote.
+/// invocation with an explicit project name. The repository's configuration
+/// (including the optional `identity:` override) is loaded from
+/// `<repo_root>/.lievo/config.yaml` by [`register`] itself, so no caller
+/// can accidentally pass a default config that ignores the override.
 pub struct RegistrationRequest<'a> {
     /// The git work-tree root to register, already validated to exist.
     pub repo_root: &'a Path,
     /// Explicit project name (CLI `--project`), or `None` to derive one.
     pub project_name: Option<&'a str>,
-    /// The repository's configuration (identity override, etc.).
-    pub config: &'a crate::config::RepoConfig,
 }
 
 /// Shared registration entry point (issue #29). Both the MCP
@@ -74,7 +73,9 @@ pub struct RegistrationRequest<'a> {
 /// `InvalidInput`. A NULL stored `git_url` is not a conflict.
 ///
 /// Returns the project and the (possibly new, possibly existing) repository
-/// row.
+/// row. An explicit project name is only checked when a new registration is
+/// created; if the path is already registered, the existing project is
+/// returned (path match wins).
 pub fn register(
     storage: &dyn Storage,
     request: &RegistrationRequest,
@@ -86,8 +87,13 @@ pub fn register(
         .to_str()
         .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
 
+    // Load the repository's own configuration here (rather than trusting a
+    // caller-supplied default) so the `identity:` override in
+    // `<repo_root>/.lievo/config.yaml` is honored identically by MCP and CLI.
+    let config = crate::config::RepoConfig::load_or_default(request.repo_root);
+
     // Identity is derived once here and threaded through (no second call).
-    let identity = derive_identity(request.repo_root, request.config);
+    let identity = derive_identity(request.repo_root, &config);
 
     // Step 1: path match.
     if let Some(mut repo) = find_repo_by_path(storage, request.repo_root)? {
@@ -127,6 +133,28 @@ pub fn register(
 
     let dir_name = repo_dir_name(request.repo_root);
 
+    // Step 1b: a no-identity repo already registered under an explicit
+    // project name is that project's own (issue #29 lens fix): stamp the
+    // override's identity on the row and return the existing project, same
+    // as the identity-bearing path-match backfill above.
+    if identity.is_some()
+        && let Some(explicit) = request.project_name
+        && !explicit.is_empty()
+        && let Some(project) = storage.get_project(explicit)?
+    {
+        let matching = storage
+            .list_repos(&project.id)?
+            .into_iter()
+            .find(|r| r.local_path == repo_root_str && r.git_url.is_none());
+        if let Some(mut repo) = matching {
+            if let Some(key) = identity.as_deref() {
+                storage.set_repo_git_url(&repo.id, key)?;
+                repo.git_url = Some(key.to_string());
+            }
+            return Ok(ResolvedRepo { project, repo });
+        }
+    }
+
     // Steps 2 & 3: identity lookup (only when a derivable identity exists).
     if let Some(identity) = identity.as_deref() {
         let matches = storage.find_repos_by_git_url(identity)?;
@@ -142,11 +170,17 @@ pub fn register(
             // user-facing notice naming the vanished path.
             eprintln!(
                 "registered '{}' as a fresh project (identity '{}' also appears at vanished path '{}'); move handling for re-cloned checkouts is a follow-up",
-                dir_name,
-                identity,
+                sanitize(&dir_name),
+                sanitize(identity),
                 sanitize(&vanished.local_path),
             );
-            return register_fresh(storage, request, &dir_name, Some(identity));
+            return register_fresh(
+                storage,
+                repo_root_str,
+                request.project_name,
+                &dir_name,
+                Some(identity),
+            );
         }
 
         if has_live {
@@ -156,14 +190,23 @@ pub fn register(
             let base = format!("{repo_short}@{dir_name}");
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
             let project = storage.create_project(&candidate, None)?;
-            let repo = storage.add_repo(&project.id, &dir_name, repo_root_str)?;
+            let repo = storage.add_repo(&project.id, &sanitize(&dir_name), repo_root_str)?;
             storage.set_repo_git_url(&repo.id, identity)?;
+            let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
+                LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
+            })?;
             return Ok(ResolvedRepo { project, repo });
         }
     }
 
     // Step 4: fresh registration.
-    register_fresh(storage, request, &dir_name, identity.as_deref())
+    register_fresh(
+        storage,
+        repo_root_str,
+        request.project_name,
+        &dir_name,
+        identity.as_deref(),
+    )
 }
 
 /// Backfill `git_url` on a path-matched row when it is NULL and a derivable
@@ -246,20 +289,22 @@ fn find_other_repo_by_git_url(
 /// vanished paths) and step 4 (no match).
 fn register_fresh(
     storage: &dyn Storage,
-    request: &RegistrationRequest,
+    repo_root_str: &str,
+    project_name: Option<&str>,
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<ResolvedRepo> {
-    let project_name = pick_fresh_project_name(storage, request, dir_name, identity)?;
+    let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
     let project = storage.create_project(&project_name, None)?;
-    let repo_root_str = request
-        .repo_root
-        .to_str()
-        .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
-    let repo = storage.add_repo(&project.id, dir_name, repo_root_str)?;
+    let repo = storage.add_repo(&project.id, &sanitize(dir_name), repo_root_str)?;
     if let Some(key) = identity {
         storage.set_repo_git_url(&repo.id, key)?;
     }
+    // Re-read: the row returned by `add_repo` is a hand-built struct that
+    // never carries `git_url`, so reflect the stamp from storage.
+    let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
+        LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
+    })?;
     Ok(ResolvedRepo { project, repo })
 }
 
@@ -276,11 +321,11 @@ fn register_fresh(
 ///   open question in #29: no-identity registrations keep today's suffixing).
 fn pick_fresh_project_name(
     storage: &dyn Storage,
-    request: &RegistrationRequest,
+    explicit_name: Option<&str>,
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<String> {
-    if let Some(explicit) = request.project_name
+    if let Some(explicit) = explicit_name
         && !explicit.is_empty()
     {
         return Ok(explicit.to_string());
@@ -292,13 +337,7 @@ fn pick_fresh_project_name(
         let owner_prefixed = owner_prefixed_name(identity, dir_name);
         return pick_available_project_name(storage, &owner_prefixed, Some(identity));
     }
-    let mut candidate = dir_name.to_string();
-    let mut suffix = 2;
-    while storage.get_project(&candidate)?.is_some() {
-        candidate = format!("{dir_name}-{suffix}");
-        suffix += 1;
-    }
-    Ok(candidate)
+    pick_available_project_name(storage, dir_name, None)
 }
 
 /// Pick a free project name starting from `base`, trying `base-2`,

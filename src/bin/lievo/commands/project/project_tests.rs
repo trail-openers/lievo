@@ -29,6 +29,39 @@ fn git_dir_with_remote(url: &str) -> TempDir {
     dir
 }
 
+/// Write `.lievo/config.yaml` into a temp repo root (issue #29: identity
+/// override injection for registration tests).
+fn write_identity_config(root: &Path, identity: &str) {
+    let lievo_dir = root.join(".lievo");
+    std::fs::create_dir_all(&lievo_dir).unwrap();
+    std::fs::write(
+        lievo_dir.join("config.yaml"),
+        format!("identity: {identity}\n"),
+    )
+    .unwrap();
+}
+
+/// Issue #29 (lens fix): a repo whose `.lievo/config.yaml` sets `identity:`
+/// must get that identity through the CLI `add-repo` path as well, proving
+/// the config is loaded by the shared `register` rather than passed in.
+#[test]
+fn test_add_repo_handler_identity_override_from_repo_config_applies() {
+    let s = storage();
+    // No origin remote: identity is ONLY derivable from the config override.
+    let dir = git_dir();
+    write_identity_config(dir.path(), "github.com/override-org/override-cli");
+
+    add_repo(&s, dir.path(), None).unwrap();
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    let repos = s.list_repos(&projects[0].id).unwrap();
+    assert_eq!(
+        repos[0].git_url.as_deref(),
+        Some("github.com/override-org/override-cli"),
+        "identity override from .lievo/config.yaml must be honored by the CLI path"
+    );
+}
+
 #[test]
 fn test_create_project_handler_succeeds() {
     let s = storage();

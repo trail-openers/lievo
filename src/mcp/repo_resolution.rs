@@ -131,15 +131,13 @@ pub type ResolvedRepo = crate::registration::ResolvedRepo;
 
 /// Find (or create) the project that owns `repo_root` (issue #863 binding
 /// decision 1, extended by issue #29 to a shared registration routine used by
-/// both MCP and CLI). Delegates to `crate::registration::register` with an
-/// explicit project name of `None` and a default (no-identity-override)
-/// `RepoConfig`.
+/// both MCP and CLI). Delegates to `crate::registration::register` with no
+/// explicit project name; the repository's own config (including any
+/// `identity:` override) is loaded from the repo root inside `register`.
 pub fn resolve_or_register(storage: &dyn Storage, repo_root: &Path) -> crate::Result<ResolvedRepo> {
-    let config = crate::config::RepoConfig::default();
     let request = crate::registration::RegistrationRequest {
         repo_root,
         project_name: None,
-        config: &config,
     };
     crate::registration::register(storage, &request)
 }

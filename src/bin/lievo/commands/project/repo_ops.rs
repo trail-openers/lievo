@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use super::json_escape;
-use lievo::config::RepoConfig;
 use lievo::output::OutputFormat;
 use lievo::registration::{RegistrationRequest, find_repo_by_path, register};
 use lievo::storage::Storage;
@@ -107,12 +106,11 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
 
     // Delegate to the shared registration function (issue #29); the
     // explicit-name "taken by a different identity" conflict is enforced
-    // there.
-    let config = RepoConfig::default();
+    // there. The repo's own config (identity override, etc.) is loaded by
+    // `register` from the repo root.
     let request = RegistrationRequest {
         repo_root: &canonical,
         project_name,
-        config: &config,
     };
     let resolved = register(storage, &request)?;
     println!(

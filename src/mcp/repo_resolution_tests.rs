@@ -31,6 +31,46 @@ fn git_tempdir_identity(name: &str, remote_url: &str) -> TempDir {
     dir
 }
 
+/// Write `.lievo/config.yaml` into a temp repo root (issue #29: identity
+/// override injection for registration tests).
+fn write_identity_config(root: &std::path::Path, identity: &str) {
+    let lievo_dir = root.join(".lievo");
+    std::fs::create_dir_all(&lievo_dir).unwrap();
+    std::fs::write(
+        lievo_dir.join("config.yaml"),
+        format!("identity: {identity}\n"),
+    )
+    .unwrap();
+}
+
+/// Issue #29 (lens fix): a repo whose `.lievo/config.yaml` sets `identity:`
+/// must get that identity through the MCP entry point, and the config must be
+/// loaded by `register` itself — a default-`RepoConfig` caller must not be
+/// able to ignore the override.
+#[test]
+fn identity_override_from_repo_config_applies_via_mcp_resolve_or_register() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    // No origin remote: identity is ONLY derivable from the config override.
+    let d = git_tempdir("override");
+    let root = d.path().join("override");
+    write_identity_config(&root, "github.com/override-org/override-repo");
+
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(
+        resolved.repo.git_url.as_deref(),
+        Some("github.com/override-org/override-repo"),
+        "identity override from .lievo/config.yaml must be honored by the MCP path"
+    );
+    // Fresh registration takes the bare dir name.
+    assert_eq!(resolved.project.name, "override");
+    // Idempotent re-registration still carries the override's identity.
+    let again = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(
+        again.repo.git_url.as_deref(),
+        Some("github.com/override-org/override-repo")
+    );
+}
+
 /// Take the crate-wide env lock (serialises LIEVO_PROJECT_DIR/CLAUDE_PROJECT_DIR
 /// mutations against every other env-mutating test in the crate — issue #863).
 fn with_env(lievo_project_dir: Option<&str>, claude_project_dir: Option<&str>, f: impl FnOnce()) {
