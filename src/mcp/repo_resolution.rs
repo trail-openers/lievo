@@ -145,3 +145,7 @@ pub fn resolve_or_register(storage: &dyn Storage, repo_root: &Path) -> crate::Re
 #[cfg(test)]
 #[path = "repo_resolution_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "repo_registration_tests.rs"]
+pub(crate) mod registration_tests;
