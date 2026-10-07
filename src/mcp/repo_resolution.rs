@@ -403,13 +403,13 @@ fn pick_available_project_name(
         match project {
             None => return Ok(candidate),
             Some(p) => {
-                let same_identity = identity.is_some_and(|id| {
-                    storage
-                        .list_repos(&p.id)
-                        .ok()
-                        .map(|repos| repos.iter().any(|r| r.git_url.as_deref() == Some(id)))
-                        .unwrap_or(false)
-                });
+                let same_identity = match identity {
+                    None => false,
+                    Some(id) => {
+                        let repos = storage.list_repos(&p.id)?;
+                        repos.iter().any(|r| r.git_url.as_deref() == Some(id))
+                    }
+                };
                 if same_identity {
                     return Ok(candidate);
                 }
