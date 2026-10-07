@@ -120,19 +120,18 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
             );
             return Ok(());
         }
-        // If the project already contains a repo at a different path AND that
-        // repo's identity is non-NULL and differs from this path's derived
-        // identity, the name is taken by a different identity — a hard
-        // error distinct from the idempotent "already registered here"
-        // success.
+        // If the project already contains a repo at a different path whose
+        // recorded identity is non-NULL and differs from this path's derived
+        // identity, the name is taken by a different identity — a hard error
+        // distinct from the idempotent "already registered here" success.
+        // A NULL git_url is NOT an identity, so it cannot conflict.
         let derived = derive_identity(&canonical, &RepoConfig::default());
         let conflicting = repos.iter().any(|r| {
             let stored = Path::new(&r.local_path);
             !is_same_path(stored, &canonical)
-                && r.git_url
-                    .as_deref()
-                    .zip(derived.as_deref())
-                    .is_some_and(|(a, b)| a != b)
+                && r.git_url.as_deref().is_some_and(|existing| {
+                    existing != derived.as_deref().unwrap_or("") && derived.is_some()
+                })
         });
         if conflicting {
             return Err(LievoError::InvalidInput(format!(
