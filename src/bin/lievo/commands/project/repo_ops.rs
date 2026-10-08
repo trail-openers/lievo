@@ -3,7 +3,10 @@
 use std::path::Path;
 
 use super::json_escape;
+use lievo::config::RepoConfig;
+use lievo::mcp::repo_resolution::find_repo_by_path;
 use lievo::output::OutputFormat;
+use lievo::registration::{RegistrationRequest, register};
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
 
@@ -70,7 +73,7 @@ pub fn delete_repo(
 }
 
 pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) -> Result<()> {
-    // Validate path exists and is a git repo.
+    // Validate path exists and is a git repo (bare rejected).
     let canonical = path
         .canonicalize()
         .map_err(|_| LievoError::InvalidRepoPath(path.display().to_string()))?;
@@ -85,29 +88,37 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         )));
     }
 
-    // Derive project name: explicit project argument, else directory name.
-    let dir_name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| LievoError::InvalidRepoPath(canonical.display().to_string()))?;
-
-    let effective_project = project_name.unwrap_or(dir_name);
-
-    // Get or auto-create the project.
-    let project = match storage.get_project(effective_project)? {
-        Some(p) => p,
-        None => {
-            let p = storage.create_project(effective_project, None)?;
-            println!("Auto-created project '{}'", p.name);
-            p
+    // Idempotent early return (issue #29): this path is already registered.
+    // The explicit-name conflict rule itself is owned by `register`.
+    if let Some(repo) = find_repo_by_path(storage, &canonical)? {
+        let existing_project = storage
+            .get_project_by_id(&repo.project_id)?
+            .ok_or_else(|| {
+                LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
+            })?;
+        if project_name.is_none() || Some(existing_project.name.as_str()) == project_name {
+            println!(
+                "Repository already registered at {} in project '{}'",
+                canonical.display(),
+                existing_project.name
+            );
+            return Ok(());
         }
-    };
+    }
 
-    let local_path = canonical.to_string_lossy().into_owned();
-    let repo = storage.add_repo(&project.id, dir_name, &local_path)?;
+    // Delegate to the shared registration function (issue #29); the
+    // explicit-name "taken by a different identity" conflict is enforced
+    // there.
+    let config = RepoConfig::default();
+    let request = RegistrationRequest {
+        repo_root: &canonical,
+        project_name,
+        config: &config,
+    };
+    let resolved = register(storage, &request)?;
     println!(
         "Registered repository '{}' (id: {}) in project '{}'",
-        repo.name, repo.id, project.name
+        resolved.repo.name, resolved.repo.id, resolved.project.name
     );
     Ok(())
 }

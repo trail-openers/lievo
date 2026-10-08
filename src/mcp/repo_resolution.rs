@@ -2,11 +2,19 @@
 //! (issue #863), shared by `serve()` (MCP) and `lievo doctor` (#865).
 //! Order: LIEVO_PROJECT_DIR > CLAUDE_PROJECT_DIR > cwd; canonicalised and
 //! walked up to the git work-tree root via `git2::Repository::discover`.
+//!
+//! Issue #29: the registration entry point itself lives in the neutral
+//! `crate::registration` module (`register` / `RegistrationRequest`). This
+//! module keeps path resolution (`resolve_project_root`), the cross-project
+//! `find_repo_by_path` lookup, and `resolve_or_register`, which delegates to
+//! `register`. The lookup order is path match → identity match among
+//! vanished paths (register fresh until move handling from issue #30 lands)
+//! → identity match among live paths (register a distinct `<repo>@<dir>`
+//! project) → fresh registration.
 
 use std::path::{Path, PathBuf};
 
-use crate::LievoError;
-use crate::model::{Project, Repository};
+use crate::model::Repository;
 use crate::storage::Storage;
 
 /// Where the resolved repository root came from.
@@ -133,45 +141,21 @@ pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Op
 }
 
 /// A project and its repository.
-#[derive(Debug, Clone)]
-pub struct ResolvedRepo {
-    pub project: Project,
-    pub repo: Repository,
-}
+pub type ResolvedRepo = crate::registration::ResolvedRepo;
 
 /// Find (or create) the project that owns `repo_root` (issue #863 binding
-/// decision 1: a library-side routine, never the binary-local `add_repo`
-/// get-or-create-by-name path). Registered: the project already containing a
-/// repo at this path. Unregistered: a fresh single-repo project named after
-/// the directory, with a deterministic collision suffix (`name`, `name-2`,
-/// …). Never attaches to an existing project by name.
+/// decision 1, extended by issue #29 to a shared registration routine used by
+/// both MCP and CLI). Delegates to `crate::registration::register` with an
+/// explicit project name of `None` and a default (no-identity-override)
+/// `RepoConfig`.
 pub fn resolve_or_register(storage: &dyn Storage, repo_root: &Path) -> crate::Result<ResolvedRepo> {
-    if let Some(repo) = find_repo_by_path(storage, repo_root)? {
-        let project = storage
-            .get_project_by_id(&repo.project_id)?
-            .ok_or_else(|| {
-                LievoError::InvalidInput(format!("project missing for repo {repo:?}"))
-            })?;
-        return Ok(ResolvedRepo { project, repo });
-    }
-
-    let dir_name = repo_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_string)
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "repo".to_string());
-
-    let mut candidate = dir_name.clone();
-    let mut suffix = 2;
-    while storage.get_project(&candidate)?.is_some() {
-        candidate = format!("{dir_name}-{suffix}");
-        suffix += 1;
-    }
-
-    let project = storage.create_project(&candidate, None)?;
-    let repo = storage.add_repo(&project.id, &dir_name, repo_root.to_str().unwrap_or(""))?;
-    Ok(ResolvedRepo { project, repo })
+    let config = crate::config::RepoConfig::default();
+    let request = crate::registration::RegistrationRequest {
+        repo_root,
+        project_name: None,
+        config: &config,
+    };
+    crate::registration::register(storage, &request)
 }
 
 #[cfg(test)]
