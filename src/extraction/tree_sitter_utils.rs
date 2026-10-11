@@ -1,39 +1,12 @@
-use crate::error::{LievoError, Result};
-use dirs;
-use sha2::{Digest, Sha256};
+use crate::error::Result;
+use crate::layout::{index_dir_for_hash, lievo_data_dir, repo_hash};
 use std::path::{Path, PathBuf};
-
-/// Hash a repository path to a unique identifier.
-pub fn repo_hash(repo_path: &Path) -> Result<String> {
-    let path_str = repo_path
-        .canonicalize()
-        .map_err(|e| LievoError::InvalidInput(format!("Failed to canonicalize repo path: {}", e)))?
-        .to_string_lossy()
-        .to_string();
-
-    let mut hasher = Sha256::new();
-    hasher.update(path_str.as_bytes());
-    let hash = hasher.finalize();
-    let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
-    Ok(hex[0..16].to_string())
-}
-
-/// Get the lievo data directory (~/.lievo/).
-pub fn lievo_data_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        LievoError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Home directory not found",
-        ))
-    })?;
-    Ok(home.join(".lievo"))
-}
 
 /// Get the ts-index directory for a repository.
 pub fn ts_index_dir_for_repo(repo_path: &Path) -> Result<PathBuf> {
     let hash = repo_hash(repo_path)?;
     let data_dir = lievo_data_dir()?;
-    Ok(data_dir.join("indices").join(hash).join("ts-index"))
+    Ok(index_dir_for_hash(&data_dir, &hash).join("ts-index"))
 }
 
 #[cfg(test)]

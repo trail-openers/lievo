@@ -82,6 +82,8 @@ pub mod storage;
 /// Summarization: on-device code summarization via the apfel backend.
 pub mod summarization;
 pub use api::Lievo;
+/// On-disk layout: the data-dir root and the repo hash scheme (stable public contract).
+pub mod layout;
 /// Auto-refresh: staleness detection and cheap-layer refresh of analyzed data.
 pub mod refresh;
 pub(crate) mod refresh_resume;

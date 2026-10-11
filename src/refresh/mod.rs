@@ -11,6 +11,8 @@ pub mod lock;
 
 mod lock_holder;
 
+pub(crate) mod relocate;
+
 mod refresh_guard;
 pub(crate) use refresh_guard::RefreshGuard;
 
