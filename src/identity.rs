@@ -122,12 +122,12 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
     // Length bound (issue #29): a key longer than `MAX_KEY_LEN` bytes is not
     // a real remote shape — reject it so an adversarial remote URL cannot
     // persist or print an unbounded identity key.
-    let key_len = key_host.len() + repo_path.len() + repo_path.matches('/').count();
-    if key_len > MAX_KEY_LEN {
+    let key = format!("{key_host}/{repo_path}");
+    if key.len() > MAX_KEY_LEN {
         return None;
     }
 
-    Some(format!("{key_host}/{repo_path}"))
+    Some(key)
 }
 
 /// Derive a repository's identity key.
@@ -419,6 +419,20 @@ mod tests {
             normalize_origin_url(&url).as_deref(),
             Some(format!("github.com/owner/{short_segment}").as_str()),
             "a key within the 512-byte bound must still normalize"
+        );
+    }
+
+    #[test]
+    fn test_normalize_origin_url_key_bound_is_exact_on_final_string() {
+        // `github.com/owner/` is 17 bytes, so a 495-byte segment yields a
+        // 512-byte key (accepted) and 496 bytes yields 513 (rejected).
+        let at_bound = "a".repeat(495);
+        let key = normalize_origin_url(&format!("git@github.com:owner/{at_bound}")).unwrap();
+        assert_eq!(key.len(), MAX_KEY_LEN);
+        let over_bound = "a".repeat(496);
+        assert_eq!(
+            normalize_origin_url(&format!("git@github.com:owner/{over_bound}")),
+            None
         );
     }
 

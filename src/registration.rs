@@ -12,10 +12,13 @@
 
 use std::path::Path;
 
+mod naming;
+
 use crate::LievoError;
 use crate::identity::derive_identity;
 use crate::model::Repository;
 use crate::storage::Storage;
+use naming::owner_prefixed_name;
 
 /// A project and its repository (issue #29: the shared registration result).
 #[derive(Debug, Clone)]
@@ -110,24 +113,16 @@ pub fn register(
     let identity = derive_identity(request.repo_root, &config);
     let identity_ref: Option<&str> = identity.as_deref();
 
-    // Step 1: path match. The row is re-read from storage in BOTH branches
-    // (backfilled and not) so the result always reflects the persisted row,
-    // not the stale copy returned by the lookup.
+    // Step 1: path match. The row is re-read from storage once, after the
+    // backfill attempt (written or not), so the result always reflects the
+    // persisted row, not the stale copy returned by the lookup.
     if let Some(repo) = find_repo_by_path(storage, request.repo_root)? {
         let project = storage
             .get_project_by_id(&repo.project_id)?
             .ok_or_else(|| {
                 LievoError::InvalidInput(format!("project missing for repo {}", repo.id))
             })?;
-        if identity_ref.is_some() && backfill_git_url(storage, &repo, identity_ref)? {
-            // Backfill wrote the row's git_url: reflect the persisted row.
-            let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
-                LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
-            })?;
-            return Ok(ResolvedRepo { project, repo });
-        }
-        // No backfill happened: still re-read, so the returned row is the
-        // persisted one (consistent with the backfill branch).
+        backfill_git_url(storage, &repo, identity_ref)?;
         let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
             LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
         })?;
@@ -192,7 +187,9 @@ pub fn register(
             // that is free, or one that `pick_available_project_name` already
             // confirmed carries this same identity (reuse). The get-or-create
             // fallback inside `create_project` is therefore never relied on.
-            let project = match storage.get_project(&candidate)? {
+            let existing = storage.get_project(&candidate)?;
+            let created = existing.is_none();
+            let project = match existing {
                 None => storage.create_project(&candidate, None)?,
                 Some(existing) => existing,
             };
@@ -208,8 +205,8 @@ pub fn register(
                     // Best-effort cleanup: delete the project only if this call
                     // created it (a reused same-identity project pre-exists and
                     // is never touched).
-                    if storage.get_project(&candidate)?.is_none() {
-                        let _ = storage.delete_project(&project.id);
+                    if created {
+                        delete_orphan_project(storage, &candidate, &project.id);
                     }
                     return Err(e);
                 }
@@ -267,23 +264,21 @@ fn register_fresh(
     identity: Option<&str>,
 ) -> crate::Result<ResolvedRepo> {
     let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
-    let created = storage.get_project(&project_name)?.is_none();
-    let project = if created {
-        storage.create_project(&project_name, None)?
-    } else {
+    let existing = storage.get_project(&project_name)?;
+    let created = existing.is_none();
+    let project = match existing {
         // Explicit attach: the name resolved to a pre-existing project.
-        storage
-            .get_project(&project_name)?
-            .expect("project exists per the check above")
+        Some(project) => project,
+        None => storage.create_project(&project_name, None)?,
     };
     let repo = match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
         Ok(r) => r,
         Err(e) => {
             // Best-effort cleanup: delete the project only if this call
             // created it (a reused existing project pre-exists and is never
-            // touched). The delete's own error is ignored.
+            // touched).
             if created {
-                let _ = storage.delete_project(&project.id);
+                delete_orphan_project(storage, &project_name, &project.id);
             }
             return Err(e);
         }
@@ -295,19 +290,17 @@ fn register_fresh(
 /// identity exists. A changed on-disk origin on a path-matched row does NOT
 /// re-key: stored `git_url` governs identity, so a non-NULL stored value is
 /// left untouched. The identity key is passed in (derived once in
-/// `register`) rather than re-derived. Returns `true` when the backfill
-/// wrote the row's `git_url` (so the caller can reflect it in its result),
-/// `false` when there was nothing to backfill.
+/// `register`) rather than re-derived. The caller re-reads the row afterwards.
 fn backfill_git_url(
     storage: &dyn Storage,
     repo: &Repository,
     identity: Option<&str>,
-) -> crate::Result<bool> {
+) -> crate::Result<()> {
     if repo.git_url.is_some() {
-        return Ok(false);
+        return Ok(());
     }
     let Some(key) = identity else {
-        return Ok(false);
+        return Ok(());
     };
     let other = find_other_repo_by_git_url(storage, key, &repo.id)?;
     if let Some(other) = other {
@@ -321,10 +314,10 @@ fn backfill_git_url(
             other.id,
             other.project_id,
         );
-        return Ok(false);
+        return Ok(());
     }
     storage.set_repo_git_url(&repo.id, key)?;
-    Ok(true)
+    Ok(())
 }
 
 /// Find a registered repo whose canonical `local_path` matches `path`,
@@ -439,21 +432,6 @@ fn pick_available_project_name(
     }
 }
 
-/// The owner-prefixed name (`<owner>/<repo>`) extracted from an identity key
-/// (`"github.com/owner/repo"` → `"owner/repo"`); falls back to `<dir>-2`
-/// (the directory name, `dir_name`) when the owner cannot be determined.
-fn owner_prefixed_name(identity: &str, dir_name: &str) -> String {
-    let parts: Vec<&str> = identity.split('/').collect();
-    let repo = parts.last().copied().unwrap_or("");
-    if let Some(owner) = parts.get(1)
-        && !owner.is_empty()
-        && !repo.is_empty()
-    {
-        return format!("{owner}/{repo}");
-    }
-    format!("{dir_name}-2")
-}
-
 /// The directory name for a repo root (used as the repo row's `name`).
 fn repo_dir_name(repo_root: &Path) -> String {
     repo_root
@@ -483,12 +461,31 @@ fn path_exists(local_path: &str) -> bool {
     Path::new(local_path).exists()
 }
 
+/// Best-effort removal of a project this call created but could not populate.
+/// The caller returns its own original error; a failed delete only leaves an
+/// orphan, so it is reported as a one-line sanitized notice instead.
+fn delete_orphan_project(storage: &dyn Storage, name: &str, id: &str) {
+    if let Err(e) = storage.delete_project(id) {
+        eprintln!(
+            "left orphaned project '{}' ({}) after failed registration: cleanup failed: {}",
+            sanitize(name),
+            sanitize(id),
+            sanitize(&e.to_string()),
+        );
+    }
+}
+
 /// Strip control characters from a value that will be interpolated into a
 /// user-facing stderr notice (terminal-safety: a hostile identity key or
 /// stored path containing ANSI/escape sequences would otherwise be written
-/// to the terminal raw). Exported so the CLI handlers (which interpolate
-/// stored project/repo names, paths and identities into their own notices)
-/// sanitize at the same boundary.
+/// to the terminal raw). Output is also capped at 200 characters so an
+/// oversized value cannot flood a notice. Exported so the CLI handlers (which
+/// interpolate stored project/repo names, paths and identities into their own
+/// notices) sanitize at the same boundary.
 pub fn sanitize(value: &str) -> String {
-    value.chars().filter(|c| !c.is_control()).collect()
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect()
 }

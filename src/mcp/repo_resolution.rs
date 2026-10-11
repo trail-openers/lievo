@@ -8,7 +8,9 @@
 //! cross-project `find_repo_by_path` lookup). This module keeps path
 //! resolution (`resolve_project_root`) and `resolve_or_register`, which
 //! delegates to `register`. `find_repo_by_path` is re-exported from
-//! `crate::registration` here for backwards-compatible imports. The lookup order is path match → identity match among
+//! `crate::registration` here for backwards-compatible imports.
+//!
+//! The lookup order is path match → identity match among
 //! vanished paths (register fresh until move handling from issue #30 lands)
 //! → identity match among live paths (register a distinct `<repo>@<dir>`
 //! project) → fresh registration.
