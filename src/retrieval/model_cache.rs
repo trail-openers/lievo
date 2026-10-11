@@ -47,6 +47,15 @@ fn non_empty_env(var: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(var).filter(|v| !v.is_empty())
 }
 
+/// Cache whose `token` entry holds the HF login: `HF_HOME/hub` when `HF_HOME` is set and
+/// non-empty, else the default cache. Never derived from `HF_HUB_CACHE`, and never from an
+/// empty `HF_HOME` (hf-hub would turn that into a relative `./token`).
+fn token_cache() -> Cache {
+    non_empty_env("HF_HOME").map_or_else(Cache::default, |home| {
+        Cache::new(PathBuf::from(home).join("hub"))
+    })
+}
+
 /// Resolves the HuggingFace hub cache directory the model lives in.
 ///
 /// hf-hub 0.5.0's `Cache::from_env` only reads `HF_HOME`, so lievo resolves it
@@ -71,11 +80,11 @@ pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
 /// allowed scheme is an error, not ignored: a user who configured a mirror must not
 /// be silently sent to the default hub.
 fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
-    // The token is read from `Cache::from_env()` (HF_HOME, else default), not from the
-    // overridden cache dir: hf-hub derives the token path from the cache dir, so
-    // `HF_HUB_CACHE` would otherwise hide a login done with `huggingface-cli login`.
+    // The token comes from `token_cache()`, not from the overridden cache dir: hf-hub
+    // derives the token path from the cache dir, so `HF_HUB_CACHE` would otherwise hide a
+    // login done with `huggingface-cli login`.
     let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()))
-        .with_token(Cache::from_env().token());
+        .with_token(token_cache().token());
     if let Some(raw) = non_empty_env("HF_ENDPOINT") {
         let endpoint = raw.into_string().map_err(|_| {
             crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
@@ -101,11 +110,17 @@ fn endpoint_is_allowed(endpoint: &str) -> bool {
     if endpoint.starts_with("https://") {
         return true;
     }
-    ["http://127.0.0.1", "http://localhost"].iter().any(|host| {
-        endpoint
-            .strip_prefix(host)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-    })
+    let Some(rest) = endpoint.strip_prefix("http://") else {
+        return false;
+    };
+    // The authority ends at the first path, query, or fragment delimiter. Any `@` is
+    // userinfo: `localhost:80@evil.example` has host `evil.example`, so reject it outright.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    matches!(host, "localhost" | "127.0.0.1")
 }
 
 /// Internal function that performs the actual download.
@@ -309,6 +324,35 @@ mod tests {
         assert!(endpoint_is_allowed("http://localhost"));
         assert!(!endpoint_is_allowed("http://hf.example.com"));
         assert!(!endpoint_is_allowed("http://localhost.evil.com"));
+        assert!(!endpoint_is_allowed("http://127.0.0.1.evil.com"));
+        assert!(!endpoint_is_allowed("http://localhost:80@evil.example"));
+        assert!(!endpoint_is_allowed("http://127.0.0.1:1@evil.example"));
+        assert!(!endpoint_is_allowed("HTTPS://hf.example.com"));
+        assert!(!endpoint_is_allowed("http://[::1]:8080"));
+    }
+
+    #[test]
+    fn token_cache_follows_hf_home_not_hub_cache() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = HfEnvGuard::set(&[
+            (
+                "HF_HOME",
+                Some(home.path().to_str().expect("utf-8 temp dir")),
+            ),
+            ("HF_HUB_CACHE", Some("/nonexistent-lievo-hub-cache")),
+            ("HF_ENDPOINT", None),
+        ]);
+        assert_eq!(token_cache().path(), &home.path().join("hub"));
+    }
+
+    #[test]
+    fn token_cache_ignores_empty_hf_home() {
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", Some("")),
+            ("HF_HUB_CACHE", None),
+            ("HF_ENDPOINT", None),
+        ]);
+        assert_eq!(token_cache().path(), Cache::default().path());
     }
 
     #[test]
