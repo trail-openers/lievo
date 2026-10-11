@@ -7,7 +7,10 @@ use crate::Result;
 use crate::model::*;
 use crate::storage::queries as q;
 
-pub(crate) use super::parse_err;
+/// Convert a String parse error into a rusqlite error (for use inside query_map closures).
+pub(crate) fn parse_err(e: String) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(e)
+}
 
 #[path = "sqlite_rel_ops.rs"]
 mod sqlite_rel_ops;

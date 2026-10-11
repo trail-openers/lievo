@@ -20,18 +20,42 @@ pub(super) fn create_project(
     name: &str,
     description: Option<&str>,
 ) -> Result<Project> {
-    // INSERT OR IGNORE: if a project with this name already exists, the insert
-    // is silently skipped. Then we SELECT the row — whether just inserted or
-    // pre-existing. Atomic because UNIQUE constraint + OR IGNORE is a single
-    // SQLite operation; no separate transaction needed.
-    conn.execute(
-        r#"INSERT OR IGNORE INTO projects (id, name, description, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5)"#,
-        (Uuid::new_v4().to_string(), name, description, now, now),
-    )?;
+    insert_project(conn, now, name, description)?;
     get_project(conn, name)?.ok_or_else(|| {
         crate::LievoError::RetrievalError("project missing after INSERT OR IGNORE".into())
     })
+}
+
+/// Atomic create-if-absent: `Some(project)` only when THIS call inserted the
+/// row, `None` when a project with `name` already existed. The insert count
+/// is the single source of truth, so a concurrent winner is never reported as
+/// created by the loser.
+pub(super) fn create_project_if_absent(
+    conn: &Connection,
+    now: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<Option<Project>> {
+    if insert_project(conn, now, name, description)? == 0 {
+        return Ok(None);
+    }
+    get_project(conn, name)?
+        .map(Some)
+        .ok_or_else(|| crate::LievoError::RetrievalError("project missing after insert".into()))
+}
+
+/// `INSERT OR IGNORE` a project row; returns the number of rows inserted (0 or 1).
+fn insert_project(
+    conn: &Connection,
+    now: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<usize> {
+    Ok(conn.execute(
+        r#"INSERT OR IGNORE INTO projects (id, name, description, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)"#,
+        (Uuid::new_v4().to_string(), name, description, now, now),
+    )?)
 }
 
 pub(super) fn get_project(conn: &Connection, name: &str) -> Result<Option<Project>> {

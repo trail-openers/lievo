@@ -153,8 +153,9 @@ pub fn register(
         });
         if conflicting {
             return Err(LievoError::InvalidInput(format!(
-                "project name '{explicit}' is already registered at a different path (identity conflict). \
-                 Choose a different project name or register this path under its own project."
+                "project name '{}' is already registered at a different path (identity conflict). \
+                 Choose a different project name or register this path under its own project.",
+                sanitize(explicit)
             )));
         }
         let existing_same = repos

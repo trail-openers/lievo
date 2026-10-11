@@ -78,16 +78,15 @@ impl SqliteStorage {
     }
 }
 
-/// Convert a String parse error into a rusqlite error (for use inside query_map closures).
-pub(crate) fn parse_err(e: String) -> rusqlite::Error {
-    rusqlite::Error::InvalidParameterName(e)
-}
-
 impl Storage for SqliteStorage {
     // ---- Project (delegated to sqlite_project) ----
 
     fn create_project(&self, name: &str, description: Option<&str>) -> Result<Project> {
         sqlite_project::create_project(&self.conn, &Self::now(), name, description)
+    }
+
+    fn create_project_if_absent(&self, name: &str, desc: Option<&str>) -> Result<Option<Project>> {
+        sqlite_project::create_project_if_absent(&self.conn, &Self::now(), name, desc)
     }
 
     fn get_project(&self, name: &str) -> Result<Option<Project>> {

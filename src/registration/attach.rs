@@ -11,10 +11,9 @@ use crate::storage::Storage;
 /// only if the name is free. `name` must already be resolved by the caller
 /// (free, or a name the caller has confirmed may be reused).
 ///
-/// Resolution is explicit (`get_project` first, `create_project` only when the
-/// name is free). `create_project` is itself get-or-create, so a concurrent
-/// process can win the race and `create_project` then returns that process's
-/// project; `created` alone is therefore not proof that this call made it. If
+/// `created` comes from the atomic insert itself (`create_project_if_absent`),
+/// not from a prior lookup: a concurrent process may create `name` between a
+/// lookup and the insert, and then this call must not claim the project. If
 /// this call created the project and the following repo insert fails, the
 /// project is deleted best-effort only when it holds no repo row for another
 /// checkout (see `holds_only_this_checkout`), and the original error is
@@ -26,11 +25,17 @@ pub(super) fn attach_or_create(
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<ResolvedRepo> {
-    let existing = storage.get_project(name)?;
-    let created = existing.is_none();
-    let project = match existing {
-        Some(project) => project,
-        None => storage.create_project(name, None)?,
+    let (project, created) = match storage.create_project_if_absent(name, None)? {
+        Some(project) => (project, true),
+        None => {
+            let project = storage.get_project(name)?.ok_or_else(|| {
+                LievoError::InvalidInput(format!(
+                    "project '{}' vanished during registration",
+                    sanitize(name)
+                ))
+            })?;
+            (project, false)
+        }
     };
     match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
         Ok(repo) => Ok(ResolvedRepo { project, repo }),
@@ -90,6 +95,19 @@ fn delete_orphan_project(storage: &dyn Storage, name: &str, id: &str) {
 mod tests {
     use super::*;
     use crate::storage::sqlite::SqliteStorage;
+
+    #[test]
+    fn create_project_if_absent_reports_creation_only_to_the_inserting_call() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let first = s.create_project_if_absent("racy", None).unwrap();
+        assert!(first.is_some(), "the first insert creates the project");
+        let second = s.create_project_if_absent("racy", None).unwrap();
+        assert!(
+            second.is_none(),
+            "an existing name must not be reported as created"
+        );
+        assert_eq!(s.list_projects().unwrap().len(), 1);
+    }
 
     #[test]
     fn holds_only_this_checkout_is_true_for_an_empty_project() {

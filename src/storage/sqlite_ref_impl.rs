@@ -11,6 +11,14 @@ impl Storage for &SqliteStorage {
     fn create_project(&self, name: &str, description: Option<&str>) -> Result<Project> {
         (*self).create_project(name, description)
     }
+
+    fn create_project_if_absent(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Option<Project>> {
+        (*self).create_project_if_absent(name, description)
+    }
     fn get_project(&self, name: &str) -> Result<Option<Project>> {
         (*self).get_project(name)
     }

@@ -27,6 +27,20 @@ pub struct DeleteStats {
 pub trait Storage {
     // Project CRUD
     fn create_project(&self, name: &str, description: Option<&str>) -> crate::Result<Project>;
+    /// Create the project only if `name` is free. Returns `Some` solely when
+    /// this call inserted the row. SQLite overrides this with one atomic
+    /// `INSERT OR IGNORE`; this default is check-then-create and is NOT
+    /// race-free, so only non-SQLite test doubles rely on it.
+    fn create_project_if_absent(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> crate::Result<Option<Project>> {
+        if self.get_project(name)?.is_some() {
+            return Ok(None);
+        }
+        self.create_project(name, description).map(Some)
+    }
     fn get_project(&self, name: &str) -> crate::Result<Option<Project>>;
     fn get_project_by_id(&self, project_id: &str) -> crate::Result<Option<Project>>;
     fn list_projects(&self) -> crate::Result<Vec<Project>>;
