@@ -71,7 +71,11 @@ pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
 /// allowed scheme is an error, not ignored: a user who configured a mirror must not
 /// be silently sent to the default hub.
 fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
-    let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()));
+    // The token is read from `Cache::from_env()` (HF_HOME, else default), not from the
+    // overridden cache dir: hf-hub derives the token path from the cache dir, so
+    // `HF_HUB_CACHE` would otherwise hide a login done with `huggingface-cli login`.
+    let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()))
+        .with_token(Cache::from_env().token());
     if let Some(raw) = non_empty_env("HF_ENDPOINT") {
         let endpoint = raw.into_string().map_err(|_| {
             crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
@@ -85,7 +89,7 @@ fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
     }
     builder.build().map_err(|e| {
         crate::LievoError::RetrievalError(format!(
-            "failed to init HuggingFace API (HF cache dir {}; {CACHE_OVERRIDE_HINT}): {e}",
+            "failed to init HuggingFace API (HF cache dir {}): {e}",
             cache_dir.display()
         ))
     })
@@ -345,6 +349,9 @@ mod tests {
 
     #[test]
     fn test_ensure_potion_code_model_network() {
+        // Hold the env lock: the download reads HF_HUB_CACHE/HF_HOME/HF_ENDPOINT, which
+        // other env-mutating tests may be changing in parallel.
+        let _guard = HfEnvGuard::set(&[]);
         // This test requires network access to download the model (potion-code-16M-v2,
         // ~16MB from HuggingFace, cached after first run) so it is not run in CI;
         // it runs locally as an ordinary, un-ignored test when the full
