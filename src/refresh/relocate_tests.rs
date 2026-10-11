@@ -42,7 +42,7 @@ fn fixture(base: &Path, data: PathBuf, with_git_url: bool) -> Fixture {
     }
     storage.update_repo_last_commit(&repo.id, "abc123").unwrap();
 
-    let old_hash = hash_canonical_path(&old_path);
+    let old_hash = hash_canonical_path(&CanonicalPath::new(&old_path).unwrap());
     let index_file = data.join("indices").join(&old_hash).join(INDEX_FILE);
     fs::create_dir_all(index_file.parent().unwrap()).unwrap();
     fs::write(&index_file, b"idx").unwrap();
@@ -76,7 +76,7 @@ fn open_lock(data: &Path, hash: &str) -> File {
 /// The moved row, panicking with the skip reason otherwise.
 fn moved(outcome: RelocateOutcome) -> Repository {
     match outcome {
-        RelocateOutcome::Moved(repo) => *repo,
+        RelocateOutcome::Moved { repo, .. } => *repo,
         RelocateOutcome::Skipped(reason) => panic!("expected a move, skipped: {reason}"),
     }
 }
@@ -85,7 +85,7 @@ fn moved(outcome: RelocateOutcome) -> Repository {
 fn skipped(outcome: RelocateOutcome) -> SkipReason {
     match outcome {
         RelocateOutcome::Skipped(reason) => reason,
-        RelocateOutcome::Moved(_) => panic!("expected a skip, got a move"),
+        RelocateOutcome::Moved { .. } => panic!("expected a skip, got a move"),
     }
 }
 
@@ -218,35 +218,33 @@ fn index_path_outside_index_dir_skips_without_moving() {
 }
 
 #[test]
-fn register_reuses_vanished_row_for_same_identity_at_new_path() {
+fn index_path_with_parent_component_under_old_dir_skips_without_moving() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
-    let _env = EnvGuard::new(&base.join("db.sqlite"));
-    let data = lievo_data_dir().unwrap();
-    let f = fixture(&base, data, true);
-    let repo = git2::Repository::init(&f.new_root).unwrap();
-    repo.config()
-        .unwrap()
-        .set_str("remote.origin.url", "git@github.com:acme/tool")
+    let f = fixture(&base, base.join("data"), true);
+    // Lexically under old_dir, but `..` would escape the index directory once joined.
+    let escaping = f
+        .data
+        .join("indices")
+        .join(&f.old_hash)
+        .join("..")
+        .join("..")
+        .join("x");
+    f.storage
+        .update_repo_index_path(&f.repo.id, escaping.to_str().unwrap())
         .unwrap();
+    let repo = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
 
-    let resolved = register(
-        &f.storage,
-        &RegistrationRequest {
-            repo_root: &f.new_root,
-            project_name: None,
-        },
-    )
-    .unwrap();
+    let reason = skipped(relocate_in(&f.storage, &repo, &f.new_root, &f.data).unwrap());
 
-    assert_eq!(resolved.project.id, f.project_id, "same project reused");
-    assert_eq!(resolved.repo.id, f.repo.id, "same repo row reused");
-    assert_eq!(resolved.repo.local_path, new_canon(&f).to_str().unwrap());
-    assert_eq!(
-        resolved.repo.last_analyzed_commit.as_deref(),
-        Some("abc123")
+    assert_eq!(reason, SkipReason::IndexOutsideIndexDir);
+    assert!(
+        f.data
+            .join("indices")
+            .join(&f.old_hash)
+            .join(INDEX_FILE)
+            .exists()
     );
-    assert_eq!(f.storage.list_projects().unwrap().len(), 1);
 }
 
 #[test]

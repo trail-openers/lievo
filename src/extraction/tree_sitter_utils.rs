@@ -1,18 +1,6 @@
-use crate::error::{LievoError, Result};
-use crate::layout::{index_dir_for_hash, repo_hash};
-use dirs;
+use crate::error::Result;
+use crate::layout::{index_dir_for_hash, lievo_data_dir, repo_hash};
 use std::path::{Path, PathBuf};
-
-/// Get the lievo data directory (~/.lievo/).
-pub fn lievo_data_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        LievoError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Home directory not found",
-        ))
-    })?;
-    Ok(home.join(".lievo"))
-}
 
 /// Get the ts-index directory for a repository.
 pub fn ts_index_dir_for_repo(repo_path: &Path) -> Result<PathBuf> {

@@ -193,19 +193,10 @@ pub fn register(
         // identity never drives a move (see the trust note above).
         if !identity_from_override && let Some(vanished) = matches.first() {
             match relocate_checkout(storage, vanished, request.repo_root)? {
-                RelocateOutcome::Moved(moved) => {
-                    let project =
-                        storage
-                            .get_project_by_id(&moved.project_id)?
-                            .ok_or_else(|| {
-                                LievoError::InvalidInput(format!(
-                                    "project missing for repo {}",
-                                    moved.id
-                                ))
-                            })?;
+                RelocateOutcome::Moved { repo, project } => {
                     return Ok(ResolvedRepo {
-                        project,
-                        repo: *moved,
+                        project: *project,
+                        repo: *repo,
                     });
                 }
                 RelocateOutcome::Skipped(reason) => {

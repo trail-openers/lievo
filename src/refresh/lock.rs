@@ -119,7 +119,7 @@ pub(crate) fn try_acquire_hash(dir: &Path, hash: &str) -> std::io::Result<Option
 }
 
 fn data_dir() -> Result<PathBuf, std::io::Error> {
-    crate::extraction::lievo_data_dir().map_err(std::io::Error::other)
+    crate::layout::lievo_data_dir().map_err(std::io::Error::other)
 }
 
 /// Try to acquire the per-repo index lock. On success the caller owns the
