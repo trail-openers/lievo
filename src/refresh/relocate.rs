@@ -54,7 +54,9 @@ use crate::identity::{Identity, IdentitySource};
 
 #[path = "relocate/rename.rs"]
 mod rename;
-use crate::layout::{CanonicalPath, hash_canonical_path, index_dir_for_hash, status_path_for_hash};
+use crate::layout::{
+    CanonicalPath, hash_canonical_path, index_dir_for_hash, repo_hash, status_path_for_hash,
+};
 use crate::model::{Project, Repository};
 use crate::storage::Storage;
 #[cfg(test)]
@@ -173,24 +175,29 @@ impl Plan {
     }
 }
 
-/// Index state already present at the new checkout's hash: its index
-/// directory and its status file, whichever exist. A failed rollback leaves
-/// such state behind, and a fresh registration at `new_root` would share it.
-/// Fails closed: an error (no data dir, an unhashable path, an unreadable
-/// path) is returned, never read as "no state". The caller must refuse
-/// registration on `Err` as well as on a non-empty list.
-pub fn leftover_index_state(repo: &Repository, new_root: &Path) -> io::Result<Vec<PathBuf>> {
+/// Index state already present at the new checkout's hash. A failed rollback
+/// leaves such state behind, and a fresh registration at `new_root` would
+/// share it. The index directory is the blocking state: it is returned only
+/// when it exists, with the status file beside it when that exists too. A
+/// status file alone carries no index data, so a stale one never blocks a
+/// first-time move or registration.
+///
+/// Keyed on the new path alone: the stored path of the vanished row is never
+/// read, so an unusable or non-canonical stored path cannot make this check
+/// fail. Fails closed on real I/O errors, and when the new path cannot be
+/// hashed. The caller must refuse registration on `Err` as well as on a
+/// non-empty list.
+pub fn leftover_index_state(new_root: &Path) -> io::Result<Vec<PathBuf>> {
     let data_dir = crate::layout::lievo_data_dir().map_err(|e| io::Error::other(e.to_string()))?;
-    let plan = Plan::new(repo, new_root, &data_dir)
-        .map_err(|reason| io::Error::other(reason.to_string()))?;
-    let mut present = Vec::new();
-    for path in [
-        plan.new_dir,
-        status_path_for_hash(&data_dir, &plan.new_hash),
-    ] {
-        if exists(&path)? {
-            present.push(path);
-        }
+    let new_hash = repo_hash(new_root).map_err(|e| io::Error::other(e.to_string()))?;
+    let new_dir = index_dir_for_hash(&data_dir, &new_hash);
+    if !exists(&new_dir)? {
+        return Ok(Vec::new());
+    }
+    let status = status_path_for_hash(&data_dir, &new_hash);
+    let mut present = vec![new_dir];
+    if exists(&status)? {
+        present.push(status);
     }
     Ok(present)
 }

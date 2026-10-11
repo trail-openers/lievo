@@ -686,15 +686,16 @@ fn register_refuses_when_move_cannot_complete_and_new_state_exists() {
         .unwrap()
         .set_str("remote.origin.url", "git@github.com:acme/tool")
         .unwrap();
-    // Block the status rename so the move fails after the index dir moved.
+    // An index directory already at the new hash: the move cannot rename into
+    // it, so it rolls back cleanly, but the leftover is index state that a
+    // fresh registration would share. It must be refused.
     let new_hash = repo_hash(&new_canon(&f)).unwrap();
-    let blocker = status_path_for_hash(&f.data, &new_hash);
-    fs::create_dir_all(&blocker).unwrap();
-    fs::write(blocker.join("keep"), b"x").unwrap();
+    let leftover = crate::layout::index_dir_for_hash(&f.data, &new_hash);
+    fs::create_dir_all(&leftover).unwrap();
+    fs::write(leftover.join("keep"), b"x").unwrap();
 
-    // The move is rolled back cleanly, but the blocker is index state at the
-    // new hash while the row names the old path. A fresh registration would
-    // share it, so it is refused.
+    // The row names the old path while index state sits at the new hash, so a
+    // fresh registration would share it. It is refused.
     let Err(err) = register(
         &f.storage,
         &RegistrationRequest {
@@ -754,11 +755,9 @@ fn leftover_index_state_fails_closed_when_new_path_cannot_be_resolved() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
     let _env = EnvGuard::new(&base.join("db.sqlite"));
-    let data = lievo_data_dir().unwrap();
-    let f = fixture(&base, data, true);
 
     // A path that cannot be resolved must be an error, not "no state".
-    assert!(leftover_index_state(&f.repo, &base.join("never-created")).is_err());
+    assert!(leftover_index_state(&base.join("never-created")).is_err());
 }
 
 #[test]

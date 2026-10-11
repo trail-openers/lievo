@@ -204,6 +204,9 @@ pub fn register(
                 outcome,
                 RelocateOutcome::Skipped(SkipReason::NotOriginIdentity)
             );
+            // A skip is reported only after the leftover check passes: when
+            // the guard refuses, its notice is the one message printed.
+            let mut skipped = None;
             match outcome {
                 RelocateOutcome::Moved {
                     repo,
@@ -244,9 +247,7 @@ pub fn register(
                         &split,
                     )));
                 }
-                RelocateOutcome::Skipped(reason) => {
-                    report_skipped_move(&vanished.local_path, repo_root_str, &reason);
-                }
+                RelocateOutcome::Skipped(reason) => skipped = Some(reason),
             }
             // Sticky refusal: a skip must not fall through to a fresh registration
             // while index state already sits at the new hash. The row still names
@@ -254,7 +255,7 @@ pub fn register(
             // for example a failed rollback. Transient skips (busy or failed lock,
             // storage read error, data-dir error) are checked too. Fails closed.
             if guard_leftovers {
-                match leftover_index_state(vanished, request.repo_root) {
+                match leftover_index_state(request.repo_root) {
                     Ok(leftovers) if leftovers.is_empty() => {}
                     Ok(leftovers) => {
                         return Err(LievoError::RepoStateUnknown(leftover_state_notice(
@@ -271,6 +272,9 @@ pub fn register(
                         )));
                     }
                 }
+            }
+            if let Some(reason) = skipped {
+                report_skipped_move(&vanished.local_path, repo_root_str, &reason);
             }
         }
     }
@@ -373,7 +377,7 @@ fn leftover_state_notice(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "checkout '{old_path}' may have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'. The retry re-keys the old row if the move can now complete, and otherwise registers fresh. A leftover status-<hash>.json without an index directory next to it may be stale from an earlier run; check it, then move it aside before re-running."
+        "checkout '{old_path}' may have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: first make sure no lievo process is running for '{new_path}', since a live process may own these files. Then check the row for '{old_path}' (`lievo admin list-repos`), move the listed paths out of the way, keeping them for inspection, and re-run lievo in '{new_path}'. The retry re-keys the old row if the move can now complete, and otherwise registers fresh."
     )
 }
 

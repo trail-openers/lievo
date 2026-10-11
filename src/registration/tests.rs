@@ -405,10 +405,10 @@ fn row_state_unknown_notice_without_moved_files_says_so() {
 }
 
 #[test]
-fn stale_status_at_new_hash_refuses_until_moved_aside_then_registers() {
-    // A move with old status state and a stale status file at the new hash:
-    // the status rename hits AlreadyExists and rolls back, so the sticky check
-    // must refuse. Moving the stale file aside lets the retry re-key the row.
+fn stale_status_alone_at_new_hash_does_not_block_registration() {
+    // A status file with no index directory carries no index data. The move's
+    // status rename hits AlreadyExists and rolls back cleanly, so the checkout
+    // registers fresh instead of being refused.
     let home = TempDir::new().unwrap();
     let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
     let data = crate::layout::lievo_data_dir().unwrap();
@@ -442,24 +442,54 @@ fn stale_status_at_new_hash_refuses_until_moved_aside_then_registers() {
         project_name: None,
     };
 
-    let Err(err) = register(&s, &request) else {
-        panic!("a stale status at the new hash must refuse registration");
-    };
-    assert!(matches!(err, LievoError::RepoStateUnknown(_)));
-    assert!(old_status.exists(), "the old status is rolled back");
-    assert_eq!(s.list_projects().unwrap().len(), 1, "nothing registered");
-
-    // Move the stale file aside, as the notice instructs, then retry.
-    std::fs::rename(&stale, data.join("stale-status.json")).unwrap();
     let resolved = register(&s, &request).unwrap();
 
-    assert_eq!(resolved.project.name, "acme/tool");
+    assert_ne!(
+        resolved.project.name, "acme/tool",
+        "a fresh project, never the vanished holder"
+    );
     assert_eq!(
         resolved.repo.local_path,
         root.canonicalize().unwrap().to_str().unwrap()
     );
-    assert!(!old_status.exists());
-    assert!(stale.exists(), "the moved status file is at the new hash");
+    assert!(old_status.exists(), "the old status is left in place");
+    assert!(stale.exists(), "the stale status file is left alone");
+    assert_eq!(s.list_projects().unwrap().len(), 2);
+}
+
+#[test]
+fn vanished_row_with_trailing_slash_path_registers_fresh() {
+    // A stored path not in normalised spelling has no hash, so the move is
+    // skipped. The leftover check keys on the new path alone, so it must not
+    // refuse: the checkout registers fresh.
+    let home = TempDir::new().unwrap();
+    let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
+    let data = crate::layout::lievo_data_dir().unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let gone = TempDir::new().unwrap();
+    let stored = format!("{}/", gone.path().join("gone").to_str().unwrap());
+    claim(&s, "acme/tool", &stored, "github.com/acme/tool");
+
+    let (_d, root) = checkout_dir("tool");
+    let git = git2::Repository::init(&root).unwrap();
+    git.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/tool")
+        .unwrap();
+    let request = RegistrationRequest {
+        repo_root: &root,
+        project_name: None,
+    };
+
+    let resolved =
+        register(&s, &request).expect("a non-normalised stored path must not refuse registration");
+
+    assert_ne!(
+        resolved.project.name, "acme/tool",
+        "a fresh project, never the vanished holder"
+    );
+    assert_eq!(s.list_projects().unwrap().len(), 2);
 }
 
 #[test]
@@ -495,8 +525,8 @@ fn busy_old_lock_refuses_over_leftover_new_state() {
         .set_str("remote.origin.url", "git@github.com:acme/tool")
         .unwrap();
     let new_hash = crate::layout::repo_hash(&root).unwrap();
-    let leftover = crate::layout::status_path_for_hash(&data, &new_hash);
-    std::fs::write(&leftover, b"{}").unwrap();
+    let leftover = crate::layout::index_dir_for_hash(&data, &new_hash);
+    std::fs::create_dir_all(&leftover).unwrap();
     let request = RegistrationRequest {
         repo_root: &root,
         project_name: None,
