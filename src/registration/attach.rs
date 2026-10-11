@@ -3,6 +3,7 @@
 //! logic and the same-identity reuse rule exist exactly once.
 
 use super::lookup::project_holds_identity;
+use super::policy::ensure_no_identity_conflict;
 use super::{ResolvedRepo, sanitize};
 use crate::LievoError;
 use crate::model::Repository;
@@ -83,10 +84,19 @@ pub(super) fn attach_or_create(
                     sanitize(name)
                 ))
             })?;
-            if source == NameSource::Auto
-                && !project_holds_identity(storage, &project.id, checkout.identity)?
-            {
-                return Ok(None);
+            match source {
+                NameSource::Auto => {
+                    if !project_holds_identity(storage, &project.id, checkout.identity)? {
+                        return Ok(None);
+                    }
+                }
+                // Re-run the identity-conflict test: a concurrent registration
+                // may have created this project for another identity after the
+                // step-2 check.
+                NameSource::Explicit => {
+                    let repos = storage.list_repos(&project.id)?;
+                    ensure_no_identity_conflict(&repos, name, checkout.identity)?;
+                }
             }
             (project, false)
         }

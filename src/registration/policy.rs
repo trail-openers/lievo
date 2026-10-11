@@ -2,7 +2,36 @@
 
 use super::sanitize;
 use crate::LievoError;
+use crate::model::Repository;
 use crate::storage::Storage;
+
+/// Errors with `InvalidInput` when any repo in `repos` has a non-NULL stored
+/// `git_url` different from `identity` (an identity conflict). A NULL stored
+/// `git_url` or a request without an identity is never a conflict. Shared by
+/// the step-2 check and the attach step, so a project created concurrently
+/// after step 2 is still checked.
+pub(super) fn ensure_no_identity_conflict(
+    repos: &[Repository],
+    explicit: &str,
+    identity: Option<&str>,
+) -> crate::Result<()> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    let conflicting = repos.iter().any(|r| {
+        r.git_url
+            .as_deref()
+            .is_some_and(|stored| stored != identity)
+    });
+    if conflicting {
+        return Err(LievoError::InvalidInput(format!(
+            "project name '{}' is held by a repository with a different identity (identity conflict). \
+             Choose a different project name or register this path under its own project.",
+            sanitize(explicit)
+        )));
+    }
+    Ok(())
+}
 
 /// Checks an explicit project name against the request's derived identity.
 ///
@@ -23,18 +52,7 @@ pub(super) fn check_explicit_name(
         return Ok(());
     };
     let repos = storage.list_repos(&project.id)?;
-    let conflicting = repos.iter().any(|r| {
-        r.git_url
-            .as_deref()
-            .is_some_and(|stored| stored != identity)
-    });
-    if conflicting {
-        return Err(LievoError::InvalidInput(format!(
-            "project name '{}' is held by a repository with a different identity (identity conflict). \
-             Choose a different project name or register this path under its own project.",
-            sanitize(explicit)
-        )));
-    }
+    ensure_no_identity_conflict(&repos, explicit, Some(identity))?;
     if let Some(same) = repos
         .iter()
         .find(|r| r.git_url.as_deref() == Some(identity))

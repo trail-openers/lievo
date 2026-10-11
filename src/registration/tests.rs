@@ -186,6 +186,39 @@ fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
 }
 
 #[test]
+fn explicit_name_claimed_for_another_identity_after_check_is_rejected() {
+    // Race: step 2 saw no project named `racy`; a concurrent registration then
+    // created it for another identity. The attach step must re-run the
+    // identity-conflict test instead of joining that project.
+    let s = SqliteStorage::open_in_memory().unwrap();
+    claim(&s, "racy", "/elsewhere", "github.com/other/racy");
+    let checkout = Checkout {
+        root: "/work/racy",
+        dir_name: "racy",
+        identity: Some("github.com/acme/racy"),
+    };
+
+    let err = attach_picked(
+        &s,
+        NameSource::Explicit,
+        |_: &dyn Storage| Ok("racy".to_string()),
+        &checkout,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, LievoError::InvalidInput(ref m) if m.contains("identity conflict")),
+        "explicit name held by another identity must fail with identity conflict; got {err:?}"
+    );
+    let claimed = s.get_project("racy").unwrap().expect("claimed project");
+    assert_eq!(
+        s.list_repos(&claimed.id).unwrap().len(),
+        1,
+        "the claimed project must not gain the checkout"
+    );
+}
+
+#[test]
 fn auto_name_repicks_are_bounded_then_fail_without_attaching() {
     let s = SqliteStorage::open_in_memory().unwrap();
     claim(&s, "stuck", "/elsewhere", "github.com/other/stuck");
