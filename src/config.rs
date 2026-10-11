@@ -343,7 +343,7 @@ impl RepoConfig {
                 || trimmed
                     .split('/')
                     .any(|seg| seg.is_empty() || seg == "." || seg == "..")
-                || !is_valid_identity_key(identity)
+                || !is_valid_identity_key(trimmed)
             {
                 return Err(LievoError::InvalidConfig {
                     path: ".lievo/config.yaml".to_string(),

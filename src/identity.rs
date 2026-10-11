@@ -388,6 +388,19 @@ mod tests {
     }
 
     #[test]
+    fn test_identity_override_trailing_newline_validates_and_derives_trimmed() {
+        // A YAML block scalar (`identity: |`) yields a trailing newline. Validation
+        // and derivation both trim first, so they must agree on the same key.
+        let config = default_config_with_identity("github.com/owner/repo\n");
+        assert!(config.validate().is_ok());
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            derive_identity(tmp.path(), &config).as_deref(),
+            Some("github.com/owner/repo")
+        );
+    }
+
+    #[test]
     fn test_derive_identity_override_with_control_chars_returns_none() {
         // Defensive: an override carrying control characters must not become
         // an identity key, matching `RepoConfig::validate`'s rejection.
