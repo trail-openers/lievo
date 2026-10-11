@@ -403,3 +403,109 @@ fn row_state_unknown_notice_without_moved_files_says_so() {
     let notice = super::row_state_unknown_notice("/old/co", "/new/co", &[]);
     assert!(notice.contains("no index files were moved"), "{notice}");
 }
+
+#[test]
+fn stale_status_at_new_hash_refuses_until_moved_aside_then_registers() {
+    // A move with old status state and a stale status file at the new hash:
+    // the status rename hits AlreadyExists and rolls back, so the sticky check
+    // must refuse. Moving the stale file aside lets the retry re-key the row.
+    let home = TempDir::new().unwrap();
+    let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
+    let data = crate::layout::lievo_data_dir().unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let gone = TempDir::new().unwrap();
+    let gone_root = gone.path().join("gone");
+    claim(
+        &s,
+        "acme/tool",
+        gone_root.to_str().unwrap(),
+        "github.com/acme/tool",
+    );
+    let old_hash = crate::layout::hash_canonical_path(
+        &crate::layout::CanonicalPath::new(gone_root.to_str().unwrap()).unwrap(),
+    );
+    let old_status = crate::layout::status_path_for_hash(&data, &old_hash);
+    std::fs::write(&old_status, b"{}").unwrap();
+
+    let (_d, root) = checkout_dir("tool");
+    let git = git2::Repository::init(&root).unwrap();
+    git.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/tool")
+        .unwrap();
+    let new_hash = crate::layout::repo_hash(&root).unwrap();
+    let stale = crate::layout::status_path_for_hash(&data, &new_hash);
+    std::fs::write(&stale, b"{}").unwrap();
+    let request = RegistrationRequest {
+        repo_root: &root,
+        project_name: None,
+    };
+
+    let Err(err) = register(&s, &request) else {
+        panic!("a stale status at the new hash must refuse registration");
+    };
+    assert!(matches!(err, LievoError::RepoStateUnknown(_)));
+    assert!(old_status.exists(), "the old status is rolled back");
+    assert_eq!(s.list_projects().unwrap().len(), 1, "nothing registered");
+
+    // Move the stale file aside, as the notice instructs, then retry.
+    std::fs::rename(&stale, data.join("stale-status.json")).unwrap();
+    let resolved = register(&s, &request).unwrap();
+
+    assert_eq!(resolved.project.name, "acme/tool");
+    assert_eq!(
+        resolved.repo.local_path,
+        root.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert!(!old_status.exists());
+    assert!(stale.exists(), "the moved status file is at the new hash");
+}
+
+#[test]
+fn busy_old_lock_refuses_over_leftover_new_state() {
+    // A transient skip (a live indexer holds the old hash's lock) must still
+    // refuse while index state already sits at the new hash: a fresh
+    // registration there would share that state.
+    let home = TempDir::new().unwrap();
+    let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
+    let data = crate::layout::lievo_data_dir().unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let gone = TempDir::new().unwrap();
+    let gone_root = gone.path().join("gone");
+    claim(
+        &s,
+        "acme/tool",
+        gone_root.to_str().unwrap(),
+        "github.com/acme/tool",
+    );
+    let old_hash = crate::layout::hash_canonical_path(
+        &crate::layout::CanonicalPath::new(gone_root.to_str().unwrap()).unwrap(),
+    );
+    let holder =
+        crate::refresh::lock::open_lock_file(&crate::layout::lock_path_for_hash(&data, &old_hash))
+            .unwrap();
+    holder.try_lock().unwrap();
+
+    let (_d, root) = checkout_dir("tool");
+    let git = git2::Repository::init(&root).unwrap();
+    git.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/tool")
+        .unwrap();
+    let new_hash = crate::layout::repo_hash(&root).unwrap();
+    let leftover = crate::layout::status_path_for_hash(&data, &new_hash);
+    std::fs::write(&leftover, b"{}").unwrap();
+    let request = RegistrationRequest {
+        repo_root: &root,
+        project_name: None,
+    };
+
+    let Err(err) = register(&s, &request) else {
+        panic!("a busy old lock over leftover new-hash state must refuse registration");
+    };
+    assert!(matches!(err, LievoError::RepoStateUnknown(_)), "{err:?}");
+    assert_eq!(s.list_projects().unwrap().len(), 1, "nothing registered");
+    assert!(leftover.exists(), "the leftover state is left in place");
+}

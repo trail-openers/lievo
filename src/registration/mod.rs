@@ -79,6 +79,8 @@ pub struct RegistrationRequest<'a> {
 ///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
 ///    The same project and repo row are reused, with no reindex. If the move
 ///    cannot be done safely, the skip is reported and it falls through to step 4.
+///    Any skip except `NotOriginIdentity` first checks the new path for leftover
+///    index state, and refuses if some is there.
 ///    Exception: when the rollback left index files split (or the row state is
 ///    unknown), registration is refused with `LievoError::RepoStateUnknown`, so
 ///    nothing indexes the new path over the split files.
@@ -196,9 +198,12 @@ pub fn register(
             && let Some(ident) = derived.as_ref()
         {
             let outcome = relocate_checkout(storage, vanished, request.repo_root, ident);
-            // Only a move that was attempted can leave renames behind. Every
-            // other skip happens before the first rename, so it has no state to guard.
-            let attempted = matches!(outcome, RelocateOutcome::Skipped(SkipReason::Move { .. }));
+            // Every skip except NotOriginIdentity is guarded by the leftover check
+            // below. NotOriginIdentity returns before anything is touched.
+            let guard_leftovers = !matches!(
+                outcome,
+                RelocateOutcome::Skipped(SkipReason::NotOriginIdentity)
+            );
             match outcome {
                 RelocateOutcome::Moved {
                     repo,
@@ -243,13 +248,12 @@ pub fn register(
                     report_skipped_move(&vanished.local_path, repo_root_str, &reason);
                 }
             }
-            // Sticky refusal: a skipped move (including one that found the split
-            // state again) must not fall through to a fresh registration while
-            // index state already sits at the new hash. The row still names the
-            // old path here, so that state is a leftover of a failed rollback.
-            // Checked only after an attempted move: every other skip happens
-            // before the first rename, so it has no state to guard. Fails closed.
-            if attempted {
+            // Sticky refusal: a skip must not fall through to a fresh registration
+            // while index state already sits at the new hash. The row still names
+            // the old path here, so that state is a leftover of an earlier run,
+            // for example a failed rollback. Transient skips (busy or failed lock,
+            // storage read error, data-dir error) are checked too. Fails closed.
+            if guard_leftovers {
                 match leftover_index_state(vanished, request.repo_root) {
                     Ok(leftovers) if leftovers.is_empty() => {}
                     Ok(leftovers) => {
@@ -369,7 +373,7 @@ fn leftover_state_notice(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "checkout '{old_path}' may have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'. The retry re-keys the old row if the move can now complete, and otherwise registers fresh. A leftover status-<hash>.json without an index directory next to it is most likely stale from an earlier run and is safe to move aside before re-running."
+        "checkout '{old_path}' may have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'. The retry re-keys the old row if the move can now complete, and otherwise registers fresh. A leftover status-<hash>.json without an index directory next to it may be stale from an earlier run; check it, then move it aside before re-running."
     )
 }
 
