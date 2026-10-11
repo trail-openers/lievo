@@ -1,5 +1,8 @@
-//! Project-name derivation for registration (issue #29).
+//! Project-name candidates for registration (issue #29). Naming only proposes
+//! a name; `attach.rs` decides whether that name is created, reused, or
+//! re-picked.
 
+use super::lookup::project_holds_identity;
 use crate::storage::Storage;
 use std::path::Path;
 
@@ -18,68 +21,58 @@ fn owner_prefixed_name(identity: &str, dir_name: &str) -> String {
     format!("{dir_name}-2")
 }
 
-/// Resolve the project name for a fresh registration.
-///
-/// Precedence (issue #29 naming rules):
-/// - An explicit project name (already trimmed and non-empty) is used as-is.
-///   The taken-by-different-identity collision is checked in `register`
-///   before reaching here.
-/// - Bare `<dir>` if free.
-/// - `<owner>/<repo>` (with a deterministic suffix if taken) when the short
-///   name is taken by a different identity AND a derivable identity exists.
-/// - `name-2`, `name-3`, … for repos with no derivable identity.
-///
-/// This only *selects* a name; the caller attaches via `attach_or_create`.
-pub(super) fn pick_fresh_project_name(
+/// Candidate `n` of `base` in the single suffix sequence: `base`, then
+/// `base-2`, `base-3`, …
+fn candidate_name(base: &str, n: usize) -> String {
+    if n == 0 {
+        base.to_string()
+    } else {
+        format!("{base}-{}", n + 1)
+    }
+}
+
+/// Name for a fresh (non-twin) registration. An explicit name never reaches
+/// here. Precedence: the bare `dir_name` when free and an identity exists or
+/// none does; with an identity, `<owner>/<repo>` once `dir_name` is taken;
+/// otherwise the suffix sequence on `dir_name`.
+pub(super) fn pick_fresh_name(
     storage: &dyn Storage,
-    explicit_name: Option<&str>,
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<String> {
-    if let Some(explicit) = explicit_name {
-        return Ok(explicit.to_string());
-    }
-    if storage.get_project(dir_name)?.is_none() {
-        return Ok(dir_name.to_string());
-    }
-    if let Some(identity) = identity {
-        let owner_prefixed = owner_prefixed_name(identity, dir_name);
-        return pick_available_project_name(storage, &owner_prefixed, Some(identity));
-    }
-    pick_available_project_name(storage, dir_name, None)
+    let base = match identity {
+        None => dir_name.to_string(),
+        Some(identity) => {
+            if storage.get_project(dir_name)?.is_none() {
+                return Ok(dir_name.to_string());
+            }
+            owner_prefixed_name(identity, dir_name)
+        }
+    };
+    pick_name(storage, &base, identity)
 }
 
-/// Pick a free project name starting from `base`, trying `base-2`,
-/// `base-3`, … if needed. If `identity` is `Some` and a candidate of that
-/// name already exists owned by a repo with the SAME identity, reuse it
-/// (idempotent: an already-taken suffix slot carrying the same identity is
-/// attached to rather than re-suffixed); otherwise keep suffixing.
-pub(super) fn pick_available_project_name(
+/// First candidate of `base` that attach will accept: a name no project holds,
+/// or one already held by `identity`. Selects only; it creates and attaches
+/// nothing.
+pub(super) fn pick_name(
     storage: &dyn Storage,
     base: &str,
     identity: Option<&str>,
 ) -> crate::Result<String> {
-    let base = if base.is_empty() {
-        "repo".to_string()
-    } else {
-        base.to_string()
-    };
-    let mut candidate = base.clone();
-    let mut suffix = 2;
+    let base = if base.is_empty() { "repo" } else { base };
+    let mut n = 0;
     loop {
+        let candidate = candidate_name(base, n);
         match storage.get_project(&candidate)? {
             None => return Ok(candidate),
-            Some(p) => {
-                let repos = storage.list_repos(&p.id)?;
-                let same_identity = identity
-                    .is_some_and(|id| repos.iter().any(|r| r.git_url.as_deref() == Some(id)));
-                if same_identity {
+            Some(project) => {
+                if project_holds_identity(storage, &project.id, identity)? {
                     return Ok(candidate);
                 }
-                candidate = format!("{base}-{suffix}");
-                suffix += 1;
             }
         }
+        n += 1;
     }
 }
 

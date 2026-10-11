@@ -3,7 +3,7 @@
 // Loads optional per-repository configuration that overrides grouping heuristics.
 
 use crate::error::{LievoError, Result};
-use crate::identity::{MAX_KEY_LEN, is_valid_identity_key};
+use crate::identity_key::{MAX_KEY_LEN, is_valid_identity_key};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;

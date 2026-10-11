@@ -41,7 +41,7 @@ fn write_identity_config(root: &Path, identity: &str) {
     .unwrap();
 }
 
-/// Issue #29 (lens fix): a repo whose `.lievo/config.yaml` sets `identity:`
+/// Issue #29: a repo whose `.lievo/config.yaml` sets `identity:`
 /// must get that identity through the CLI `add-repo` path as well, proving
 /// the config is loaded by the shared `register` rather than passed in.
 #[test]
@@ -575,10 +575,10 @@ fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
         .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
         .unwrap();
 
-    // New repo WITH a derivable identity at a different path. The request's
-    // derived identity is Some(...), but the stored row has a NULL git_url,
-    // so the conflict check (`stored != derived`) is `None != Some(...)` =
-    // true → no conflict. The name is free.
+    // New repo WITH a derivable identity at a different path. The conflict
+    // check is `git_url.is_some_and(|stored| stored != identity)`. A NULL
+    // stored git_url makes it false, so there is no conflict and the name is
+    // free to attach to.
     let dir2 = git_dir_with_remote("git@github.com:owner-a/repo");
 
     // Must succeed: a stored NULL git_url is not "a different identity".
@@ -617,7 +617,7 @@ fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
     );
 }
 
-/// Issue #29 (lens fix): an explicit project name whose project already
+/// Issue #29: an explicit project name whose project already
 /// holds a repo with the SAME identity at a different path must still attach
 /// (the user explicitly asked for that name), adding a second repo row
 /// without touching the original row.
@@ -673,7 +673,7 @@ fn test_add_repo_handler_explicit_project_same_identity_attaches_and_notices() {
     );
 }
 
-/// Issue #29 (lens fix): an explicit project name that is empty or
+/// Issue #29: an explicit project name that is empty or
 /// whitespace-only is rejected as invalid input up front.
 #[test]
 fn test_add_repo_handler_explicit_project_empty_name_rejected() {

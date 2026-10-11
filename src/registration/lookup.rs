@@ -7,27 +7,43 @@ use super::sanitize;
 use crate::model::Repository;
 use crate::storage::Storage;
 
-/// Find a registered repo whose canonical `local_path` matches `path`,
-/// across ALL projects (issue #863 decision 1). Compares both the raw and
-/// the canonicalised form of the stored path against the raw and
-/// canonicalised form of `path`, so a symlinked or otherwise
-/// non-canonical lookup still matches.
+/// Find a registered repo whose `local_path` matches `path`, across ALL
+/// projects (issue #863 decision 1). The raw path is compared first, with no
+/// filesystem access and an early return. Only then is `path` canonicalised
+/// and compared against the stored raw and canonical paths, so a symlinked or
+/// otherwise non-canonical lookup still matches.
 pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Option<Repository>> {
-    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut repos = Vec::new();
     for project in storage.list_projects()? {
-        for repo in storage.list_repos(&project.id)? {
-            let stored = Path::new(&repo.local_path);
-            let canon = stored.canonicalize().ok();
-            if stored == path
-                || stored == target
-                || canon.as_deref() == Some(path)
-                || canon.as_deref() == Some(target.as_path())
-            {
-                return Ok(Some(repo));
-            }
-        }
+        repos.extend(storage.list_repos(&project.id)?);
     }
-    Ok(None)
+    if let Some(i) = repos.iter().position(|r| Path::new(&r.local_path) == path) {
+        return Ok(Some(repos.swap_remove(i)));
+    }
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Ok(repos.into_iter().find(|repo| {
+        let stored = Path::new(&repo.local_path);
+        stored == target
+            || stored
+                .canonicalize()
+                .is_ok_and(|canon| canon == path || canon == target)
+    }))
+}
+
+/// Whether the project `project_id` holds a repo whose stored `git_url` is
+/// `identity`. Always false for a `None` identity.
+pub(super) fn project_holds_identity(
+    storage: &dyn Storage,
+    project_id: &str,
+    identity: Option<&str>,
+) -> crate::Result<bool> {
+    let Some(identity) = identity else {
+        return Ok(false);
+    };
+    Ok(storage
+        .list_repos(project_id)?
+        .iter()
+        .any(|r| r.git_url.as_deref() == Some(identity)))
 }
 
 /// Backfill `git_url` on a path-matched row when it is NULL and a derivable

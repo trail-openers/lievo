@@ -6,29 +6,27 @@
 //! delegates here and re-exports `find_repo_by_path` for compatibility.
 //!
 //! Submodules: `lookup` (path match, liveness, identity backfill), `naming`
-//! (project-name selection), `attach` (create-or-attach a project and add the
-//! repo row, with orphan cleanup).
-//!
-//! `register` owns the explicit-project-name conflict rule: an explicit name
-//! that exists and holds a repo whose stored non-NULL `git_url` differs from
-//! this request's derived identity is `InvalidInput` ("taken by a different
-//! identity"); a NULL stored `git_url` is not a conflict.
+//! (candidate project names), `policy` (the explicit-name identity conflict),
+//! `attach` (create-or-attach a project, the same-identity reuse rule, the
+//! bounded re-pick, and orphan cleanup).
 
 use std::path::Path;
 
 mod attach;
 mod lookup;
 mod naming;
+mod policy;
+#[cfg(test)]
+mod tests;
 
 use crate::LievoError;
 use crate::config::RepoConfig;
 use crate::identity::derive_identity;
 use crate::storage::Storage;
-use attach::attach_or_create;
+use attach::{Checkout, NameSource, attach_picked};
 use lookup::{backfill_git_url, path_exists};
-use naming::{
-    pick_available_project_name, pick_fresh_project_name, repo_dir_name, repo_short_name,
-};
+use naming::{pick_fresh_name, pick_name, repo_dir_name, repo_short_name};
+use policy::check_explicit_name;
 
 pub use lookup::find_repo_by_path;
 
@@ -58,37 +56,37 @@ pub struct RegistrationRequest<'a> {
 /// `resolve_or_register` routine and the CLI `add-repo` handler call this.
 ///
 /// Lookup order:
-/// 1. **Path match** — a repo already stored at this path, in either its raw
-///    or canonical form, across all projects (`find_repo_by_path`). Its
-///    project is returned. A NULL stored `git_url` is backfilled from the
-///    derived identity unless that key already belongs to another repo (the
-///    overlap is logged; path match wins, no merge, no move). A changed
-///    on-disk origin never re-keys: a non-NULL stored `git_url` is
-///    authoritative.
-/// 2. **Live same-identity twin** — another stored repo with the same
-///    identity whose `local_path` still exists. The new checkout is registered
-///    as a distinct project named `<repo>@<dir>` (deterministic suffix if that
-///    name is taken). It is never moved and never attached to the twin's
-///    project. Skipped when an explicit project name is given.
-/// 3. **Fresh registration** — everything else. The project is named `<dir>`
-///    if free; `<owner>/<repo>` if `<dir>` is taken by a different identity;
-///    and, for repos with no derivable identity, `name-2`, `name-3`, …. A
-///    same-identity repo whose stored path has vanished falls through to here
-///    until issue #30 adds move handling.
+/// 1. **Path match** — a repo already stored at this path, in its raw or
+///    canonical form, across all projects (`find_repo_by_path`). Its project
+///    is returned even if an explicit name asks for another project; that
+///    ignored name is reported on stderr. A NULL stored `git_url` is
+///    backfilled from the derived identity unless another repo already owns
+///    that key (path match wins, no merge, no move). A non-NULL stored
+///    `git_url` is authoritative: a changed on-disk origin never re-keys.
+/// 2. **Explicit-name check** (explicit name only) — `check_explicit_name`
+///    fails with `InvalidInput` when the named project holds a repo with a
+///    different identity, and prints a notice when it already tracks this one.
+/// 3. **Live same-identity twin** (auto name only) — another stored repo with
+///    the same identity whose `local_path` still exists. The checkout joins
+///    `<repo>@<dir>`, reusing that project when it already holds this
+///    identity, otherwise the next free suffix. It is never moved and never
+///    attached to the twin's own project.
+/// 4. **Fresh registration** — the explicit name as given, or for an auto name
+///    `<dir>` if free; else `<owner>/<repo>` when an identity exists; else
+///    `<dir>-2`, `-3`, …. A same-identity repo whose stored path has vanished
+///    falls through to here until issue #30 adds move handling.
 ///
-/// Explicit project name: when `project_name` is given it is trimmed once and
-/// used everywhere. It must not be empty. It is checked against the
-/// explicit-name conflict rule (the check fires only when the request has a
-/// derivable identity AND the named project holds a repo whose stored non-NULL
-/// `git_url` differs from it, which is `InvalidInput` "taken by a different
-/// identity"). A stored NULL `git_url`, or a request with no derivable
-/// identity, never conflicts. If the named project already tracks the same
-/// identity at another path, registration proceeds and a notice is printed.
+/// Attaching (`attach::attach_picked`): an auto name is reused only when its
+/// project already holds this identity. If a concurrent registration claimed
+/// the picked name for another identity, the name is re-picked, at most three
+/// times, then the call fails with `InvalidInput`. An explicit name is never
+/// re-picked.
+///
+/// The explicit name is trimmed once and must not be empty. A stored NULL
+/// `git_url`, or a request with no derivable identity, never conflicts.
 ///
 /// Returns the project and the (possibly new, possibly existing) repository
-/// row. An explicit project name is only checked when a new registration is
-/// created; if the path is already registered, the existing project is
-/// returned (path match wins).
+/// row.
 pub fn register(
     storage: &dyn Storage,
     request: &RegistrationRequest,
@@ -127,6 +125,16 @@ pub fn register(
             .ok_or_else(|| {
                 LievoError::InvalidInput(format!("project missing for repo {}", repo.id))
             })?;
+        if let Some(explicit) = project_name
+            && explicit != project.name
+        {
+            eprintln!(
+                "'{}' is already registered in project '{}'; ignoring --project '{}'",
+                sanitize(repo_root_str),
+                sanitize(&project.name),
+                sanitize(explicit),
+            );
+        }
         backfill_git_url(storage, &repo, identity_ref)?;
         let repo = storage.get_repo(&repo.id)?.ok_or_else(|| {
             LievoError::InvalidInput(format!("repo row missing after re-read: {}", repo.id))
@@ -134,45 +142,19 @@ pub fn register(
         return Ok(ResolvedRepo { project, repo });
     }
 
-    // Explicit-name conflict rule: an explicit project name that exists and
-    // holds a repo with a stored non-NULL `git_url` that differs from this
-    // request's derived identity is a hard error. When the request has no
-    // derivable identity, the check is skipped entirely (no re-key). When the
-    // named project already holds a repo with the SAME identity at a different
-    // path, registration still proceeds (the user asked for that name) and a
-    // notice makes the duplicate visible.
-    if let Some(explicit) = project_name
-        && let Some(identity) = identity_ref
-        && let Some(project) = storage.get_project(explicit)?
-    {
-        let repos = storage.list_repos(&project.id)?;
-        let conflicting = repos.iter().any(|r| {
-            r.git_url
-                .as_deref()
-                .is_some_and(|stored| stored != identity)
-        });
-        if conflicting {
-            return Err(LievoError::InvalidInput(format!(
-                "project name '{}' is already registered at a different path (identity conflict). \
-                 Choose a different project name or register this path under its own project.",
-                sanitize(explicit)
-            )));
-        }
-        let existing_same = repos
-            .iter()
-            .find(|r| r.git_url.as_deref() == Some(identity));
-        if let Some(existing_same) = existing_same {
-            eprintln!(
-                "attached to existing project '{}', which already tracks the same remote at '{}'",
-                sanitize(explicit),
-                sanitize(&existing_same.local_path),
-            );
-        }
+    // Step 2: explicit-name identity check.
+    if let Some(explicit) = project_name {
+        check_explicit_name(storage, explicit, identity_ref)?;
     }
 
     let dir_name = repo_dir_name(request.repo_root);
+    let checkout = Checkout {
+        root: repo_root_str,
+        dir_name: &dir_name,
+        identity: identity_ref,
+    };
 
-    // Step 2: live same-identity twin. Only a stored path that definitely
+    // Step 3: live same-identity twin. Only a stored path that definitely
     // vanished (`Ok(false)`) is non-live; see `path_exists`.
     if let Some(identity) = identity_ref
         && project_name.is_none()
@@ -180,20 +162,30 @@ pub fn register(
         let matches = storage.find_repos_by_git_url(identity)?;
         if matches.iter().any(|r| path_exists(&r.local_path)) {
             let base = format!("{}@{dir_name}", repo_short_name(identity));
-            let candidate = pick_available_project_name(storage, &base, Some(identity))?;
-            return attach_or_create(
+            return attach_picked(
                 storage,
-                &candidate,
-                repo_root_str,
-                &dir_name,
-                Some(identity),
+                NameSource::Auto,
+                |st: &dyn Storage| pick_name(st, &base, Some(identity)),
+                &checkout,
             );
         }
     }
 
-    // Step 3: fresh registration.
-    let name = pick_fresh_project_name(storage, project_name, &dir_name, identity_ref)?;
-    attach_or_create(storage, &name, repo_root_str, &dir_name, identity_ref)
+    // Step 4: fresh registration.
+    match project_name {
+        Some(explicit) => attach_picked(
+            storage,
+            NameSource::Explicit,
+            |_: &dyn Storage| Ok(explicit.to_string()),
+            &checkout,
+        ),
+        None => attach_picked(
+            storage,
+            NameSource::Auto,
+            |st: &dyn Storage| pick_fresh_name(st, &dir_name, identity_ref),
+            &checkout,
+        ),
+    }
 }
 
 /// Strip control characters from a value that will be interpolated into a

@@ -1,30 +1,79 @@
 //! Create-or-attach a project and add the repository row (issue #29). The one
 //! place that creates projects for a registration, so the orphan-cleanup
-//! logic exists exactly once.
+//! logic and the same-identity reuse rule exist exactly once.
 
+use super::lookup::project_holds_identity;
 use super::{ResolvedRepo, sanitize};
 use crate::LievoError;
 use crate::model::Repository;
 use crate::storage::Storage;
 
-/// Attach `repo_root_str` to the project named `name`, creating that project
-/// only if the name is free. `name` must already be resolved by the caller
-/// (free, or a name the caller has confirmed may be reused).
+/// Picked names tried before a registration gives up. More than one attempt is
+/// only needed when a concurrent registration claims a picked name first.
+const MAX_PICK_ATTEMPTS: usize = 3;
+
+/// The checkout being registered.
+pub(super) struct Checkout<'a> {
+    /// Repo root, stored as the repo row's `local_path`.
+    pub root: &'a str,
+    /// Directory name, stored unchanged as the repo row's `name`.
+    pub dir_name: &'a str,
+    /// Derived identity, stamped as the repo row's `git_url` when present.
+    pub identity: Option<&'a str>,
+}
+
+/// Where the project name came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NameSource {
+    /// Named by the user (`--project`): used as-is, never re-picked.
+    Explicit,
+    /// Picked by naming: a lost race re-picks through naming.
+    Auto,
+}
+
+/// Picks a project name with `pick`, then attaches the checkout to it. An auto
+/// name that a concurrent registration claimed for a different identity is
+/// re-picked, up to `MAX_PICK_ATTEMPTS` picks in total, then `InvalidInput`.
+pub(super) fn attach_picked<F>(
+    storage: &dyn Storage,
+    source: NameSource,
+    pick: F,
+    checkout: &Checkout,
+) -> crate::Result<ResolvedRepo>
+where
+    F: Fn(&dyn Storage) -> crate::Result<String>,
+{
+    for _ in 0..MAX_PICK_ATTEMPTS {
+        let name = pick(storage)?;
+        if let Some(resolved) = attach_or_create(storage, &name, checkout, source)? {
+            return Ok(resolved);
+        }
+    }
+    Err(LievoError::InvalidInput(
+        "could not pick a free project name: candidates were claimed concurrently; retry the registration"
+            .to_string(),
+    ))
+}
+
+/// Attach `checkout` to the project named `name`, creating it when the name is
+/// free.
+///
+/// The reuse rule: an existing project is attached to only for an explicit
+/// name, or for an auto name whose project already holds this identity. An
+/// auto name now held by any other project returns `Ok(None)` so the caller
+/// re-picks.
 ///
 /// `created` comes from the atomic insert itself (`create_project_if_absent`),
-/// not from a prior lookup: a concurrent process may create `name` between a
-/// lookup and the insert, and then this call must not claim the project. If
-/// this call created the project and the following repo insert fails, the
-/// project is deleted best-effort only when it holds no repo row for another
-/// checkout (see `holds_only_this_checkout`), and the original error is
-/// returned. A project that pre-existed is never touched.
+/// not from a prior lookup. If this call created the project and the following
+/// repo insert fails, the project is deleted best-effort only when it holds no
+/// repo row for another checkout (see `holds_only_this_checkout`), and the
+/// original error is returned. A project that pre-existed is never touched.
 pub(super) fn attach_or_create(
     storage: &dyn Storage,
     name: &str,
-    repo_root_str: &str,
-    dir_name: &str,
-    identity: Option<&str>,
-) -> crate::Result<ResolvedRepo> {
+    checkout: &Checkout,
+    source: NameSource,
+) -> crate::Result<Option<ResolvedRepo>> {
     let (project, created) = match storage.create_project_if_absent(name, None)? {
         Some(project) => (project, true),
         None => {
@@ -34,13 +83,18 @@ pub(super) fn attach_or_create(
                     sanitize(name)
                 ))
             })?;
+            if source == NameSource::Auto
+                && !project_holds_identity(storage, &project.id, checkout.identity)?
+            {
+                return Ok(None);
+            }
             (project, false)
         }
     };
-    match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
-        Ok(repo) => Ok(ResolvedRepo { project, repo }),
+    match add_repo_row(storage, &project.id, checkout) {
+        Ok(repo) => Ok(Some(ResolvedRepo { project, repo })),
         Err(e) => {
-            if created && holds_only_this_checkout(storage, &project.id, repo_root_str) {
+            if created && holds_only_this_checkout(storage, &project.id, checkout.root) {
                 delete_orphan_project(storage, name, &project.id);
             }
             Err(e)
@@ -55,12 +109,10 @@ pub(super) fn attach_or_create(
 fn add_repo_row(
     storage: &dyn Storage,
     project_id: &str,
-    dir_name: &str,
-    repo_root_str: &str,
-    identity: Option<&str>,
+    checkout: &Checkout,
 ) -> crate::Result<Repository> {
-    let repo = storage.add_repo(project_id, dir_name, repo_root_str)?;
-    if let Some(key) = identity {
+    let repo = storage.add_repo(project_id, checkout.dir_name, checkout.root)?;
+    if let Some(key) = checkout.identity {
         storage.set_repo_git_url(&repo.id, key)?;
     }
     storage.get_repo(&repo.id)?.ok_or_else(|| {

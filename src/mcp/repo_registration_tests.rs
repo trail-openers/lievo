@@ -106,7 +106,7 @@ fn long_dir_name_is_stored_raw_not_display_sanitized() {
 
 /// Issue #29: two folders with the same identity, both live paths — the
 /// second registration becomes a distinct project named <repo>@<dir> with
-/// its own index, never a move (the "override" case).
+/// its own index, never a move.
 #[test]
 fn two_live_same_identity_folders_get_distinct_repo_at_dir_project() {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -319,10 +319,9 @@ fn identity_bearing_twin_never_reuses_a_different_identity_project() {
 
     // A third acme/twin repo at yet another "twin" dir: now an acme/twin
     // identity match exists (d1's repo is live) → step 3. The base <repo>@<dir>
-    // name "twin@twin" is already taken by a DIFFERENT-identity project (d0,
-    // the bare "twin" project), so a distinct project is created instead — a
-    // same-identity reuse only applies to a project that carries the same
-    // identity. Never a move, never a -2 suffix.
+    // name "twin@twin" is free, so the checkout takes it. It must not be
+    // attached to the different-identity project (d0) or the acme/twin
+    // project (d1). Never a move, never a -2 suffix.
     let d2 = git_tempdir_identity("twin", "git@github.com:acme/twin");
     let r2 = d2.path().join("twin");
     let third = resolve_or_register(&storage, r2.as_path()).unwrap();

@@ -13,6 +13,8 @@ mod config_tests;
 pub mod error;
 /// Repository identity: normalized origin-remote identity keys and the `identity:` override (issue #28).
 pub mod identity;
+/// Identity-key length and character bounds, shared by `config` and `identity` (a leaf module).
+pub(crate) mod identity_key;
 pub use error::{LievoError, Result};
 /// Top-level Lievo facade: composes the SQLite storage into a single thread-safe entry point.
 pub mod api;

@@ -27,7 +27,7 @@ fn write_identity_config(root: &std::path::Path, identity: &str) {
     .unwrap();
 }
 
-/// Issue #29 (lens fix): a repo whose `.lievo/config.yaml` sets `identity:`
+/// Issue #29: a repo whose `.lievo/config.yaml` sets `identity:`
 /// must get that identity through the MCP entry point, and the config must be
 /// loaded by `register` itself — a default-`RepoConfig` caller must not be
 /// able to ignore the override.
@@ -273,7 +273,7 @@ fn unregistered_repo_creates_a_fresh_single_repo_project() {
 
 #[test]
 fn collision_suffix_counts_up_deterministically() {
-    // Issue #29 (resolved open question): no-identity registrations keep
+    // Issue #29: no-identity registrations keep
     // today's -2/-3 suffixing (no derivable identity → no owner-prefixed
     // name to fall back to). Three identical no-remote dirs must still
     // suffix deterministically.
