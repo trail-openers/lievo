@@ -13,6 +13,8 @@ use std::time::Duration;
 /// Shared with `usearch_searcher` so the on-disk index staleness marker and
 /// the model actually loaded can never drift apart.
 pub const MODEL_ID: &str = "minishlab/potion-code-16M-v2";
+/// Largest refs/<revision> entry accepted before it is treated as malformed (bytes).
+const MAX_REF_BYTES: u64 = 256;
 /// Timeout for model download (in seconds). Allows ~16MB+ downloads on slow links.
 const MODEL_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 /// Remediation shown wherever the HF cache directory is the likely cause of a failure.
@@ -160,6 +162,22 @@ pub fn model_dir() -> crate::Result<Option<PathBuf>> {
     };
 
     let ref_path = repo_dir.join("refs").join(repo.revision());
+    let invalid_ref = || {
+        crate::LievoError::RetrievalError(format!(
+            "invalid ref in HF cache at {}",
+            ref_path.display()
+        ))
+    };
+    // A real ref is a single commit id; a longer value is malformed, so it is
+    // rejected from its metadata length without being read.
+    let ref_meta = match std::fs::metadata(&ref_path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(read_err(&ref_path, e)),
+    };
+    if ref_meta.len() > MAX_REF_BYTES {
+        return Err(invalid_ref());
+    }
     let commit = match std::fs::read_to_string(&ref_path) {
         Ok(commit) => commit.trim().to_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -170,10 +188,7 @@ pub fn model_dir() -> crate::Result<Option<PathBuf>> {
     }
     // The ref is joined into a path, so only a plain hex commit id may be used.
     if !is_plain_commit_id(&commit) {
-        return Err(crate::LievoError::RetrievalError(format!(
-            "invalid ref in HF cache at {}",
-            ref_path.display()
-        )));
+        return Err(invalid_ref());
     }
 
     let snapshot = repo_dir.join("snapshots").join(commit);

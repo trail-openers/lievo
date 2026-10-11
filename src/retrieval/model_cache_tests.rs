@@ -294,6 +294,31 @@ fn model_dir_rejects_ref_that_is_not_a_commit_id() {
 }
 
 #[test]
+fn model_dir_rejects_oversized_ref_without_reading_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let _guard = HfEnvGuard::set(&[
+        ("HF_HOME", None),
+        (
+            "HF_HUB_CACHE",
+            Some(root.path().to_str().expect("utf-8 temp dir")),
+        ),
+        ("HF_ENDPOINT", None),
+    ]);
+    let repo = root.path().join("models--minishlab--potion-code-16M-v2");
+    std::fs::create_dir_all(repo.join("refs")).expect("create refs");
+    // A valid commit id followed by padding past the 256-byte bound.
+    let oversized = format!("abc123{}", "0".repeat(300));
+    std::fs::write(repo.join("refs/main"), &oversized).expect("write ref");
+    let snapshot = repo.join("snapshots/abc123");
+    std::fs::create_dir_all(&snapshot).expect("create snapshot");
+    std::fs::write(snapshot.join("tokenizer.json"), "{}").expect("write tokenizer");
+    let msg = model_dir()
+        .expect_err("oversized ref must be reported")
+        .to_string();
+    assert!(msg.contains("invalid ref in HF cache at"), "{msg}");
+}
+
+#[test]
 fn model_dir_matches_hf_hub_lookup() {
     let root = tempfile::tempdir().expect("tempdir");
     let _guard = HfEnvGuard::set(&[

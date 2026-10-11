@@ -324,7 +324,7 @@ pub fn doctor(path: Option<&str>, fmt: OutputFormat) -> lievo::Result<i32> {
         Err(e) => {
             problems.push(Problem {
                 what: format!("could not read embedding model cache: {e}"),
-                fix: "fix permissions on the HF cache directory, or set HF_HOME or HF_HUB_CACHE to a readable directory",
+                fix: "check the HF cache at the path above: fix its permissions, or remove the malformed refs file so the model is re-downloaded; set HF_HOME or HF_HUB_CACHE to use another directory",
                 is_failure: false,
             });
             false
