@@ -88,8 +88,12 @@ fn do_download() -> crate::Result<PathBuf> {
     })?;
 
     let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
-    // Neutral context only: network, DNS, TLS and 404 failures are not cache-dir problems.
-    let cache_context = format!("HF cache dir {}", cache_dir.display());
+    // Every download failure names the cache dir and the override, since a read-only or
+    // unwritable cache surfaces here as an io error from `repo.get`.
+    let cache_context = format!(
+        "HF cache dir {}; set HF_HOME or HF_HUB_CACHE to a writable directory to override",
+        cache_dir.display()
+    );
     let fetch = |artifact: &str| {
         repo.get(artifact).map_err(|e| {
             crate::LievoError::RetrievalError(format!(
@@ -282,6 +286,7 @@ mod tests {
             .to_string();
         assert!(msg.contains("failed to download"), "{msg}");
         assert!(msg.contains(&dir.display().to_string()), "{msg}");
+        assert!(msg.contains("HF_HUB_CACHE"), "{msg}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
