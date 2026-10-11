@@ -29,11 +29,34 @@ pub enum IdentitySource {
     Origin,
 }
 
-/// A derived identity key and the source it was derived from.
+/// A derived identity key and the source it was derived from. Constructed only
+/// by [`derive_identity`], so the provenance cannot be forged elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
-    pub key: String,
-    pub source: IdentitySource,
+    key: String,
+    source: IdentitySource,
+}
+
+impl Identity {
+    /// The normalized identity key (`host/owner/repo`, or an override).
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Where the key came from.
+    pub fn source(&self) -> IdentitySource {
+        self.source
+    }
+
+    /// A fixture identity for tests in other modules. Production code gets its
+    /// identities from [`derive_identity`] only.
+    #[cfg(test)]
+    pub(crate) fn for_test(key: &str, source: IdentitySource) -> Identity {
+        Identity {
+            key: key.to_string(),
+            source,
+        }
+    }
 }
 
 /// Whether `port` is the standard port for `scheme`, i.e. redundant in a key.

@@ -76,10 +76,7 @@ fn open_lock(data: &Path, hash: &str) -> File {
 
 /// The identity a fixture's row was stored under: the origin remote.
 fn origin() -> Identity {
-    Identity {
-        key: GIT_URL.to_string(),
-        source: IdentitySource::Origin,
-    }
+    Identity::for_test(GIT_URL, IdentitySource::Origin)
 }
 
 /// The moved row, panicking with the skip reason otherwise.
@@ -578,10 +575,7 @@ fn override_identity_is_refused_by_relocate_and_touches_nothing() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
     let f = fixture(&base, base.join("data"), true);
-    let by_override = Identity {
-        key: GIT_URL.to_string(),
-        source: IdentitySource::Override,
-    };
+    let by_override = Identity::for_test(GIT_URL, IdentitySource::Override);
 
     let reason = skipped(relocate_in(
         &f.storage,
@@ -608,10 +602,7 @@ fn origin_identity_must_match_stored_git_url_case_insensitively() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
     let f = fixture(&base, base.join("data"), true);
-    let other_repo = Identity {
-        key: "github.com/other/tool".to_string(),
-        source: IdentitySource::Origin,
-    };
+    let other_repo = Identity::for_test("github.com/other/tool", IdentitySource::Origin);
     assert_eq!(
         skipped(relocate_in(
             &f.storage,
@@ -623,10 +614,7 @@ fn origin_identity_must_match_stored_git_url_case_insensitively() {
         SkipReason::NotOriginIdentity
     );
 
-    let shouted = Identity {
-        key: "GitHub.com/Acme/Tool".to_string(),
-        source: IdentitySource::Origin,
-    };
+    let shouted = Identity::for_test("GitHub.com/Acme/Tool", IdentitySource::Origin);
     let moved = moved(relocate_in(
         &f.storage,
         &f.repo,
@@ -728,6 +716,49 @@ fn register_refuses_when_move_cannot_complete_and_new_state_exists() {
             .exists(),
         "the completed index rename is rolled back"
     );
+}
+
+#[test]
+fn override_identity_with_leftover_state_still_registers_fresh() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let _env = EnvGuard::new(&base.join("db.sqlite"));
+    let data = lievo_data_dir().unwrap();
+    let f = fixture(&base, data, true);
+    // An override never attempts a move, so leftover state must not block it.
+    fs::create_dir_all(f.new_root.join(".lievo")).unwrap();
+    let config = f.new_root.join(".lievo/config.yaml");
+    fs::write(config, format!("identity: {GIT_URL}\n")).unwrap();
+    let stale = status_path_for_hash(&f.data, &repo_hash(&new_canon(&f)).unwrap());
+    fs::write(&stale, b"{}").unwrap();
+
+    let resolved = register(
+        &f.storage,
+        &RegistrationRequest {
+            repo_root: &f.new_root,
+            project_name: None,
+        },
+    )
+    .unwrap();
+
+    assert_ne!(resolved.project.id, f.project_id);
+    assert_eq!(
+        f.storage.get_repo(&f.repo.id).unwrap().unwrap().local_path,
+        f.old_path
+    );
+    assert!(stale.exists(), "the leftover file is left alone");
+}
+
+#[test]
+fn leftover_index_state_fails_closed_when_new_path_cannot_be_resolved() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let _env = EnvGuard::new(&base.join("db.sqlite"));
+    let data = lievo_data_dir().unwrap();
+    let f = fixture(&base, data, true);
+
+    // A path that cannot be resolved must be an error, not "no state".
+    assert!(leftover_index_state(&f.repo, &base.join("never-created")).is_err());
 }
 
 #[test]

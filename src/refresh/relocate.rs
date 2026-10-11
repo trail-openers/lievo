@@ -171,23 +171,23 @@ impl Plan {
 /// Index state already present at the new checkout's hash: its index
 /// directory and its status file, whichever exist. A failed rollback leaves
 /// such state behind, and a fresh registration at `new_root` would share it.
-/// A path that cannot be hashed has no index state, so the list is empty. An
-/// unreadable path counts as present, because it must not be overwritten
-/// blindly.
-pub fn leftover_index_state(repo: &Repository, new_root: &Path) -> Vec<PathBuf> {
-    let Ok(data_dir) = crate::layout::lievo_data_dir() else {
-        return Vec::new();
-    };
-    let Ok(plan) = Plan::new(repo, new_root, &data_dir) else {
-        return Vec::new();
-    };
-    [
+/// Fails closed: an error (no data dir, an unhashable path, an unreadable
+/// path) is returned, never read as "no state". The caller must refuse
+/// registration on `Err` as well as on a non-empty list.
+pub fn leftover_index_state(repo: &Repository, new_root: &Path) -> io::Result<Vec<PathBuf>> {
+    let data_dir = crate::layout::lievo_data_dir().map_err(|e| io::Error::other(e.to_string()))?;
+    let plan = Plan::new(repo, new_root, &data_dir)
+        .map_err(|reason| io::Error::other(reason.to_string()))?;
+    let mut present = Vec::new();
+    for path in [
         plan.new_dir,
         status_path_for_hash(&data_dir, &plan.new_hash),
-    ]
-    .into_iter()
-    .filter(|path| exists(path).unwrap_or(true))
-    .collect()
+    ] {
+        if exists(&path)? {
+            present.push(path);
+        }
+    }
+    Ok(present)
 }
 
 /// Move the index directory and the status file from the old hash to the new.
@@ -303,11 +303,11 @@ fn failed_update_outcome(
 /// same identity the row was stored under. A row with no stored `git_url`
 /// never moves.
 fn may_move(repo: &Repository, identity: &Identity) -> bool {
-    identity.source == IdentitySource::Origin
+    identity.source() == IdentitySource::Origin
         && repo
             .git_url
             .as_deref()
-            .is_some_and(|url| url.eq_ignore_ascii_case(&identity.key))
+            .is_some_and(|url| url.eq_ignore_ascii_case(identity.key()))
 }
 
 /// Re-key `repo` (a vanished checkout) to `new_root`, using the lievo data dir.

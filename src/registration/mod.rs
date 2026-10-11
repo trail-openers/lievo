@@ -133,7 +133,7 @@ pub fn register(
 
     // Identity is derived once here and threaded through (no second call).
     let derived = derive_identity(request.repo_root, &config);
-    let identity_ref: Option<&str> = derived.as_ref().map(|d| d.key.as_str());
+    let identity_ref: Option<&str> = derived.as_ref().map(|d| d.key());
 
     // Step 1: path match. The row is re-read from storage once, after the
     // backfill attempt (written or not), so the result always reflects the
@@ -195,7 +195,11 @@ pub fn register(
         if let Some(vanished) = matches.first()
             && let Some(ident) = derived.as_ref()
         {
-            match relocate_checkout(storage, vanished, request.repo_root, ident) {
+            let outcome = relocate_checkout(storage, vanished, request.repo_root, ident);
+            // Only a move that was attempted can leave renames behind. Every
+            // other skip happens before the first rename, so it has no state to guard.
+            let attempted = matches!(outcome, RelocateOutcome::Skipped(SkipReason::Move { .. }));
+            match outcome {
                 RelocateOutcome::Moved {
                     repo,
                     project,
@@ -243,13 +247,26 @@ pub fn register(
             // state again) must not fall through to a fresh registration while
             // index state already sits at the new hash. The row still names the
             // old path here, so that state is a leftover of a failed rollback.
-            let leftovers = leftover_index_state(vanished, request.repo_root);
-            if !leftovers.is_empty() {
-                return Err(LievoError::RepoStateUnknown(leftover_state_notice(
-                    &vanished.local_path,
-                    repo_root_str,
-                    &leftovers,
-                )));
+            // Checked only after an attempted move: every other skip happens
+            // before the first rename, so it has no state to guard. Fails closed.
+            if attempted {
+                match leftover_index_state(vanished, request.repo_root) {
+                    Ok(leftovers) if leftovers.is_empty() => {}
+                    Ok(leftovers) => {
+                        return Err(LievoError::RepoStateUnknown(leftover_state_notice(
+                            &vanished.local_path,
+                            repo_root_str,
+                            &leftovers,
+                        )));
+                    }
+                    Err(e) => {
+                        return Err(LievoError::RepoStateUnknown(leftover_check_notice(
+                            &vanished.local_path,
+                            repo_root_str,
+                            &e,
+                        )));
+                    }
+                }
             }
         }
     }
@@ -352,7 +369,21 @@ fn leftover_state_notice(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "checkout '{old_path}' appears to have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'."
+        "checkout '{old_path}' may have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'. The retry re-keys the old row if the move can now complete, and otherwise registers fresh. A leftover status-<hash>.json without an index directory next to it is most likely stale from an earlier run and is safe to move aside before re-running."
+    )
+}
+
+/// The error for a registration refused because the leftover-state check
+/// itself failed. Nothing is registered: state at the new path could not be
+/// ruled out, so a fresh registration there could share it.
+fn leftover_check_notice(old_path: &str, new_path: &str, error: &std::io::Error) -> String {
+    format!(
+        "checkout '{}' may have moved to '{}', but the index state at the new path could not be checked ({}). Nothing was registered. Recovery: check the data directory is readable (`lievo admin list-repos` shows the row for '{}'), then re-run lievo in '{}'.",
+        sanitize(old_path),
+        sanitize(new_path),
+        sanitize(&error.to_string()),
+        sanitize(old_path),
+        sanitize(new_path),
     )
 }
 

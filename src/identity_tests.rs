@@ -52,7 +52,7 @@ fn test_normalize_origin_url_all_spellings_collapse_to_one_key() {
 
 /// The derived key without its source, for comparing spellings.
 fn key_of(identity: &Option<Identity>) -> Option<&str> {
-    identity.as_ref().map(|i| i.key.as_str())
+    identity.as_ref().map(|i| i.key())
 }
 
 /// Build a tempdir git repo with an origin remote set to `url`.
@@ -230,11 +230,14 @@ fn test_derive_identity_reports_the_source_of_the_key() {
     let _ = make_repo_with_remote(tmp.path(), "https://github.com/real/repo");
     let from_override = derive_identity(tmp.path(), &default_config_with_identity("a.b/c/d"));
     assert_eq!(
-        from_override.map(|i| i.source),
+        from_override.map(|i| i.source()),
         Some(IdentitySource::Override)
     );
     let from_origin = derive_identity(tmp.path(), &RepoConfig::default());
-    assert_eq!(from_origin.map(|i| i.source), Some(IdentitySource::Origin));
+    assert_eq!(
+        from_origin.map(|i| i.source()),
+        Some(IdentitySource::Origin)
+    );
 }
 
 #[test]
