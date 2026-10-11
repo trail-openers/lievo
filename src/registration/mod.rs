@@ -21,7 +21,7 @@ mod tests;
 
 use crate::LievoError;
 use crate::config::RepoConfig;
-use crate::identity::derive_identity;
+use crate::identity::{IdentitySource, derive_identity};
 use crate::refresh::relocate::{RelocateOutcome, SkipReason, relocate_checkout};
 use crate::storage::Storage;
 use attach::{Checkout, NameSource, attach_picked};
@@ -127,12 +127,11 @@ pub fn register(
     let config = RepoConfig::load_or_default(request.repo_root);
 
     // Identity is derived once here and threaded through (no second call).
-    let identity = derive_identity(request.repo_root, &config);
-    let identity_ref: Option<&str> = identity.as_deref();
-    let identity_from_override = config
-        .identity
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty());
+    let derived = derive_identity(request.repo_root, &config);
+    let identity_ref: Option<&str> = derived.as_ref().map(|d| d.key.as_str());
+    let identity_from_origin = derived
+        .as_ref()
+        .is_some_and(|d| d.source == IdentitySource::Origin);
 
     // Step 1: path match. The row is re-read from storage once, after the
     // backfill attempt (written or not), so the result always reflects the
@@ -189,9 +188,9 @@ pub fn register(
         }
         // Step 3b (issue #30): no live twin, so a vanished checkout of this
         // identity may have moved here. Re-key its row instead of registering
-        // a fresh project. A skipped move falls through to step 4. An override
-        // identity never drives a move (see the trust note above).
-        if !identity_from_override && let Some(vanished) = matches.first() {
+        // a fresh project. A skipped move falls through to step 4. Only an
+        // origin-derived identity drives a move (see the trust note above).
+        if identity_from_origin && let Some(vanished) = matches.first() {
             match relocate_checkout(storage, vanished, request.repo_root)? {
                 RelocateOutcome::Moved {
                     repo,
@@ -240,7 +239,7 @@ pub fn register(
 fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
     if let SkipReason::Move { split, .. } = reason {
         for r in split {
-            eprintln!("{}", split_notice(old_path, &r.from, &r.to));
+            eprintln!("{}", split_notice(old_path, new_path, &r.from, &r.to));
         }
     }
     eprintln!(
@@ -253,14 +252,16 @@ fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
 }
 
 /// The notice for index files that a failed rollback left at `to` instead of
-/// `from`. The row still names `old_path`, so the user must put them back or
-/// remove them before that checkout's index is usable again.
-fn split_notice(old_path: &str, from: &Path, to: &Path) -> String {
+/// `from`. Nothing moves them back automatically: the row still names
+/// `old_path`, and the new path is registered fresh with the same hash. Move
+/// the files back before indexing `new_path`, which reuses that hash.
+fn split_notice(old_path: &str, new_path: &str, from: &Path, to: &Path) -> String {
     let old_path = sanitize(old_path);
+    let new_path = sanitize(new_path);
     let from = sanitize(&from.to_string_lossy());
     let to = sanitize(&to.to_string_lossy());
     format!(
-        "warning: index state for '{old_path}' is split: '{to}' could not be moved back to '{from}'. To recover, rename '{to}' back to '{from}', or remove '{to}' and reindex '{old_path}'."
+        "warning: index state for '{old_path}' is split: '{to}' could not be moved back to '{from}'. Rename '{to}' back to '{from}' before indexing '{new_path}'."
     )
 }
 

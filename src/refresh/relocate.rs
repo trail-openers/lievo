@@ -5,18 +5,22 @@
 //! directory and status file move from the old path's hash to the new one's,
 //! and the row is updated afterwards. Nothing is reindexed.
 //!
-//! Ordering: take the old lock, re-read the row under it, check the project,
-//! rename the filesystem state, and only then update the row. A failure at any
-//! step rolls back completed renames, leaves the row untouched and returns a
-//! [`SkipReason`], so the caller registers fresh. This module prints nothing;
-//! the caller decides how to report a skip.
+//! Ordering: take the old and new locks (in hash order), re-read the row under
+//! them, check the project, rename the filesystem state, and only then update
+//! the row. A failed row update is judged by re-reading the row: if it already
+//! names the new path the move is committed; rollback happens only when it
+//! still names the old path. Other failures roll back completed renames, leave
+//! the row untouched and return a [`SkipReason`], so the caller registers
+//! fresh. This module prints nothing; the caller decides how to report a skip.
 //!
 //! A rollback that itself fails leaves some files at the new hash while the
-//! row still names the old path. The next relocation of the same checkout
-//! finishes the job: a source that is already gone is skipped, and the row's
-//! index path is rebased onto the new directory.
+//! row still names the old path. Nothing finishes this automatically: the
+//! fallback fresh registration at the new path then shares the new index
+//! directory with the split files. Recovery is manual (the notice printed by
+//! the caller says what to do), and the new checkout must not be indexed until
+//! it is done.
 //!
-//! The old lock file is never removed. Unlinking it after release lets a
+//! The lock files are never removed. Unlinking one after release lets a
 //! second process lock an orphaned inode while a third creates a new file at
 //! the same path, so two writers could run at once. A leftover empty lock
 //! file is harmless.
@@ -40,9 +44,10 @@ pub enum SkipReason {
     /// A stored or new path cannot be hashed: it is not absolute and
     /// normalised, is not UTF-8, or does not resolve. The message says which.
     Unusable(String),
-    /// The old lock could not be opened or taken, for a reason other than contention.
+    /// The old or new lock could not be opened or taken, for a reason other
+    /// than contention.
     LockFailed(io::ErrorKind, String),
-    /// A live process holds the old index lock.
+    /// A live process holds the old or the new index lock.
     IndexInUse,
     /// The row changed while relocation was starting.
     RowChanged,
@@ -50,6 +55,8 @@ pub enum SkipReason {
     ProjectMissing,
     /// The stored index path is not under the old index directory.
     IndexOutsideIndexDir,
+    /// The repo row or its project could not be read. Nothing was changed.
+    StorageRead(String),
     /// A rename or the row update failed. `split` lists renames that could
     /// not be undone: those files stay at `to` instead of `from`.
     Move { cause: String, split: Vec<Rename> },
@@ -67,6 +74,7 @@ impl fmt::Display for SkipReason {
             Self::IndexOutsideIndexDir => {
                 f.write_str("its stored index path is outside its index directory")
             }
+            Self::StorageRead(e) => write!(f, "its row could not be read: {e}"),
             Self::Move { cause, .. } => write!(f, "the move failed: {cause}"),
         }
     }
@@ -167,9 +175,28 @@ fn roll_back(done: &[Rename]) -> Vec<Rename> {
         .collect()
 }
 
+// Test seam: runs once between the index-directory rename and the status
+// rename, so a test can force a failed rollback. Never set in production.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BETWEEN_RENAMES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn between_renames() {
+    if let Some(hook) = BETWEEN_RENAMES.with(|h| h.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn between_renames() {}
+
 /// Move the index directory and the status file from the old hash to the new.
 fn move_state(data_dir: &Path, plan: &Plan, done: &mut Vec<Rename>) -> io::Result<()> {
     move_if_present(done, plan.old_dir.clone(), plan.new_dir.clone())?;
+    between_renames();
     move_if_present(
         done,
         status_path_for_hash(data_dir, &plan.old_hash),
@@ -198,13 +225,52 @@ fn rebase_index_path(index_path: Option<&str>, plan: &Plan) -> Result<Option<Str
         .ok_or_else(|| SkipReason::Unusable("its moved index path is not UTF-8".to_string()))
 }
 
-/// Take the old path's lock. A busy lock means a live indexer is writing
-/// there; any other failure is reported as itself.
-fn lock_old(data_dir: &Path, old_hash: &str) -> Result<File, SkipReason> {
-    match try_acquire_hash(data_dir, old_hash) {
+/// Take one hash's lock. A busy lock means a live indexer is writing there;
+/// any other failure is reported as itself.
+fn lock_hash(data_dir: &Path, hash: &str) -> Result<File, SkipReason> {
+    match try_acquire_hash(data_dir, hash) {
         Ok(Some(file)) => Ok(file),
         Ok(None) => Err(SkipReason::IndexInUse),
         Err(e) => Err(SkipReason::LockFailed(e.kind(), e.to_string())),
+    }
+}
+
+/// Take the old and the new hash's locks before any rename, so a live indexer
+/// on either path blocks the move. Taken in lexical hash order, so two
+/// relocations over the same pair of paths cannot deadlock. The guards are held
+/// until dropped; a failure drops any guard already taken.
+fn lock_pair(data_dir: &Path, plan: &Plan) -> Result<Vec<File>, SkipReason> {
+    let mut hashes = vec![plan.old_hash.as_str(), plan.new_hash.as_str()];
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+        .into_iter()
+        .map(|hash| lock_hash(data_dir, hash))
+        .collect()
+}
+
+/// What the row says after a failed update, judged by re-reading it.
+enum RowAfterError {
+    /// The row names the new path: the update committed despite the error.
+    Committed(Box<Repository>),
+    /// The row still names the old path: the update did not land.
+    OldPath,
+    /// The row names neither path, or could not be read: it cannot be trusted
+    /// either way, so the renames must not be undone.
+    Unknown,
+}
+
+/// Judge a failed row update from a re-read of the row. Only a row that names
+/// the old path permits a rollback.
+fn row_after_error(
+    reread: crate::Result<Option<Repository>>,
+    old_path: &str,
+    new_path: &str,
+) -> RowAfterError {
+    match reread {
+        Ok(Some(row)) if row.local_path == new_path => RowAfterError::Committed(Box::new(row)),
+        Ok(Some(row)) if row.local_path == old_path => RowAfterError::OldPath,
+        _ => RowAfterError::Unknown,
     }
 }
 
@@ -224,6 +290,15 @@ pub fn relocate_checkout(
     }
 }
 
+/// The project of `row`, read before the commit point.
+fn read_project(storage: &dyn Storage, row: &Repository) -> Result<Project, SkipReason> {
+    match storage.get_project_by_id(&row.project_id) {
+        Ok(Some(project)) => Ok(project),
+        Ok(None) => Err(SkipReason::ProjectMissing),
+        Err(e) => Err(SkipReason::StorageRead(e.to_string())),
+    }
+}
+
 /// [`relocate_checkout`] with an explicit data dir.
 fn relocate_in(
     storage: &dyn Storage,
@@ -238,23 +313,40 @@ fn relocate_in(
     if let Err(e) = fs::create_dir_all(data_dir) {
         return Ok(RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string())));
     }
-    let lock = match lock_old(data_dir, &plan.old_hash) {
-        Ok(lock) => lock,
+    let locks = match lock_pair(data_dir, &plan) {
+        Ok(locks) => locks,
         Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
     };
 
-    // Re-read the row under the lock. A concurrent registration may have moved
-    // it after our snapshot was taken, in which case `repo` is stale.
-    let current = match storage.get_repo(&repo.id)? {
-        Some(row) if row.local_path == repo.local_path => row,
-        _ => return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged)),
+    // Re-read the row under the locks. A concurrent relocation may have moved
+    // it after our snapshot was taken: then the move is already done and there
+    // is nothing left to rename.
+    let current = match storage.get_repo(&repo.id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged)),
+        Err(e) => {
+            return Ok(RelocateOutcome::Skipped(SkipReason::StorageRead(
+                e.to_string(),
+            )));
+        }
     };
+    let moved_by_other = current.local_path == plan.new_path;
+    if !moved_by_other && current.local_path != repo.local_path {
+        return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged));
+    }
     // Check the project before the commit point: once the row is updated, a
     // missing project could only be reported as a failure of a finished move.
-    let project = match storage.get_project_by_id(&current.project_id)? {
-        Some(project) => project,
-        None => return Ok(RelocateOutcome::Skipped(SkipReason::ProjectMissing)),
+    let project = match read_project(storage, &current) {
+        Ok(project) => project,
+        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
     };
+    if moved_by_other {
+        return Ok(RelocateOutcome::Moved {
+            repo: Box::new(current),
+            project: Box::new(project),
+            notice: None,
+        });
+    }
     let index_path = match rebase_index_path(current.index_path.as_deref(), &plan) {
         Ok(path) => path,
         Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
@@ -263,17 +355,21 @@ fn relocate_in(
     // Move the filesystem state, recording each rename for rollback. The row
     // is updated only after the files are in place.
     let mut done = Vec::new();
-    let result = move_state(data_dir, &plan, &mut done)
-        .map_err(|e| e.to_string())
-        .and_then(|()| {
-            storage
-                .update_repo_local_path(&repo.id, &plan.new_path, index_path.as_deref())
-                .map_err(|e| e.to_string())
-        });
+    let committed = match move_state(data_dir, &plan, &mut done) {
+        // Nothing reached the row, so it still names the old path.
+        Err(e) => Err((e.to_string(), RowAfterError::OldPath)),
+        Ok(()) => storage
+            .update_repo_local_path(&repo.id, &plan.new_path, index_path.as_deref())
+            .map_err(|e| {
+                let state =
+                    row_after_error(storage.get_repo(&repo.id), &repo.local_path, &plan.new_path);
+                (e.to_string(), state)
+            }),
+    };
 
-    // Release the lock. It stays on disk (see module docs).
-    drop(lock);
-    match result {
+    // Release the locks. They stay on disk (see module docs).
+    drop(locks);
+    match committed {
         Ok(()) => {
             let fallback = Repository {
                 local_path: plan.new_path,
@@ -287,9 +383,22 @@ fn relocate_in(
                 notice,
             })
         }
-        Err(cause) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
+        Err((cause, RowAfterError::Committed(row))) => Ok(RelocateOutcome::Moved {
+            repo: row,
+            project: Box::new(project),
+            notice: Some(format!(
+                "the row update reported an error ({cause}), but the row already names the new path"
+            )),
+        }),
+        Err((cause, RowAfterError::OldPath)) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
             cause,
             split: roll_back(&done),
+        })),
+        Err((cause, RowAfterError::Unknown)) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
+            cause: format!(
+                "{cause}; the row could not be checked, so the moved index files were left at the new path"
+            ),
+            split: done,
         })),
     }
 }

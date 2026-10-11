@@ -180,6 +180,104 @@ fn busy_old_lock_skips_move_and_leaves_row_untouched() {
 }
 
 #[test]
+fn busy_new_lock_skips_move_with_no_renames() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let new_hash = repo_hash(&new_canon(&f)).unwrap();
+    let holder = open_lock(&f.data, &new_hash);
+    holder.try_lock().unwrap();
+
+    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
+
+    assert_eq!(
+        reason,
+        SkipReason::IndexInUse,
+        "a live indexer on the destination blocks the move"
+    );
+    assert!(
+        f.data
+            .join("indices")
+            .join(&f.old_hash)
+            .join(INDEX_FILE)
+            .exists(),
+        "nothing is renamed"
+    );
+    assert!(!f.data.join("indices").join(&new_hash).exists());
+    let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+    assert_eq!(row.local_path, f.old_path);
+}
+
+#[test]
+fn row_already_at_new_path_is_a_finished_move_not_a_conflict() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let new_path = new_canon(&f).to_str().unwrap().to_string();
+    // Another process moved the row after our snapshot (`f.repo`) was taken.
+    f.storage
+        .update_repo_local_path(&f.repo.id, &new_path, None)
+        .unwrap();
+
+    match relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap() {
+        RelocateOutcome::Moved { repo, notice, .. } => {
+            assert!(
+                notice.is_none(),
+                "no notice for a move someone else finished"
+            );
+            assert_eq!(repo.local_path, new_path);
+        }
+        RelocateOutcome::Skipped(reason) => panic!("expected a move, skipped: {reason}"),
+    }
+    assert!(
+        f.data
+            .join("indices")
+            .join(&f.old_hash)
+            .join(INDEX_FILE)
+            .exists(),
+        "no renames are made"
+    );
+}
+
+#[test]
+fn failed_row_update_is_judged_by_the_row_it_left_behind() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let (old, new) = (f.old_path.as_str(), "/new/checkout");
+    let at_new = Repository {
+        local_path: new.to_string(),
+        ..f.repo.clone()
+    };
+    let elsewhere = Repository {
+        local_path: "/elsewhere".to_string(),
+        ..f.repo.clone()
+    };
+    let read_failed = crate::LievoError::InvalidInput("read failed".to_string());
+
+    assert!(matches!(
+        row_after_error(Ok(Some(at_new)), old, new),
+        RowAfterError::Committed(row) if row.local_path == new
+    ));
+    assert!(matches!(
+        row_after_error(Ok(Some(f.repo.clone())), old, new),
+        RowAfterError::OldPath
+    ));
+    assert!(matches!(
+        row_after_error(Ok(Some(elsewhere)), old, new),
+        RowAfterError::Unknown
+    ));
+    assert!(matches!(
+        row_after_error(Ok(None), old, new),
+        RowAfterError::Unknown
+    ));
+    assert!(matches!(
+        row_after_error(Err(read_failed), old, new),
+        RowAfterError::Unknown
+    ));
+}
+
+#[test]
 fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
@@ -243,6 +341,61 @@ fn roll_back_reports_only_renames_it_could_not_undo() {
     assert_eq!(split[0].to, stuck_to);
     assert!(undone_from.exists(), "the undoable rename is restored");
     assert!(!undone_to.exists());
+}
+
+#[test]
+fn split_rollback_leaves_files_at_new_dir_and_register_never_overwrites_them() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let _env = EnvGuard::new(&base.join("db.sqlite"));
+    let data = lievo_data_dir().unwrap();
+    let f = fixture(&base, data, true);
+    let repo = git2::Repository::init(&f.new_root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/tool")
+        .unwrap();
+    // The status rename fails (blocked), and the rollback of the index dir
+    // rename cannot land because the old dir is re-created non-empty between
+    // the two steps. The index files are left at the new hash.
+    let new_hash = repo_hash(&new_canon(&f)).unwrap();
+    let blocker = status_path_for_hash(&f.data, &new_hash);
+    fs::create_dir_all(&blocker).unwrap();
+    fs::write(blocker.join("keep"), b"x").unwrap();
+    let old_dir = f.data.join("indices").join(&f.old_hash);
+    let recreate = old_dir.clone();
+    BETWEEN_RENAMES.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            fs::create_dir_all(&recreate).unwrap();
+            fs::write(recreate.join("keep"), b"x").unwrap();
+        }));
+    });
+    let new_dir = f.data.join("indices").join(&new_hash);
+
+    let resolved = register(
+        &f.storage,
+        &RegistrationRequest {
+            repo_root: &f.new_root,
+            project_name: None,
+        },
+    )
+    .unwrap();
+
+    assert_ne!(
+        resolved.project.id, f.project_id,
+        "the split falls back to fresh"
+    );
+    assert!(
+        new_dir.join(INDEX_FILE).exists(),
+        "the split index file stays where it is, not overwritten"
+    );
+    assert!(
+        old_dir.join("keep").exists(),
+        "the re-created old dir is untouched"
+    );
+    let old = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+    assert_eq!(old.local_path, f.old_path, "the vanished row is untouched");
+    assert_eq!(old.index_path, f.repo.index_path);
 }
 
 #[test]
