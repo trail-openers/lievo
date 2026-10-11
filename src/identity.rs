@@ -1,7 +1,7 @@
 // Repository identity: deriving a stable identity key from a repository's
 // origin remote URL (issue #28, sub-issue 1 of epic #24).
 //
-// The identity key is `host/owner/repo` with a lowercase host, no
+// The identity key is `host/owner/repo`, fully lowercase, no
 // credentials, no user, no `.git` suffix and no explicit standard port.
 // Every spelling of the same remote (SSH, HTTPS, git://, ssh://, scp-like)
 // normalizes to the same key. Unparseable or unknown-scheme URLs yield
@@ -46,10 +46,9 @@ fn has_forbidden_segment(path: &str) -> bool {
 
 /// Normalize a git origin remote URL into an identity key.
 ///
-/// Returns `Some("host/owner/repo")` — lowercase host, no `.git` suffix, no
-/// credentials, no user, no explicit standard port — or `None` when the URL
-/// is unparseable, uses an unsupported scheme, contains a control character,
-/// or lacks an owner/repo shape.
+/// Returns `Some("host/owner/repo")` — fully lowercase, no `.git` suffix, no credentials,
+/// no user, no explicit standard port — or `None` when the URL is unparseable, uses an
+/// unsupported scheme, contains a control character, or lacks an owner/repo shape.
 pub fn normalize_origin_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
@@ -119,7 +118,7 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
     // Length bound (issue #29): a key longer than `MAX_KEY_LEN` bytes is not
     // a real remote shape — reject it so an adversarial remote URL cannot
     // persist or print an unbounded identity key.
-    let key = format!("{key_host}/{repo_path}");
+    let key = format!("{key_host}/{repo_path}").to_ascii_lowercase();
     if !is_valid_identity_key(&key) {
         return None;
     }
@@ -216,6 +215,15 @@ mod tests {
                 "URL {url} should normalize to {expected}, got {key}"
             );
         }
+    }
+
+    #[test]
+    fn test_origin_and_override_mixed_case_collapse_to_same_key() {
+        let tmp = TempDir::new().unwrap();
+        let _ = make_repo_with_remote(tmp.path(), "git@github.com:Owner/Repo.git");
+        let config = default_config_with_identity("github.com/owner/repo");
+        let origin = derive_identity(tmp.path(), &RepoConfig::default());
+        assert_eq!(origin, derive_identity(tmp.path(), &config));
     }
 
     #[test]

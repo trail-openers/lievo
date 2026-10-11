@@ -73,12 +73,17 @@ pub(super) fn attach_or_create(
     let (project, created) = match storage.create_project_if_absent(name, None)? {
         Some(project) => (project, true),
         None => {
-            let project = storage.get_project(name)?.ok_or_else(|| {
-                LievoError::InvalidInput(format!(
-                    "project '{}' vanished during registration",
-                    sanitize(name)
-                ))
-            })?;
+            let Some(project) = storage.get_project(name)? else {
+                // The project was deleted between the failed insert and this
+                // lookup. An auto name re-picks; an explicit name cannot.
+                return match source {
+                    NameSource::Auto => Ok(None),
+                    NameSource::Explicit => Err(LievoError::InvalidInput(format!(
+                        "project '{}' vanished during registration",
+                        sanitize(name)
+                    ))),
+                };
+            };
             match source {
                 NameSource::Auto => {
                     if !project_holds_live_identity(storage, &project.id, checkout.identity)? {
