@@ -79,8 +79,11 @@ pub struct RegistrationRequest<'a> {
 ///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
 ///    The same project and repo row are reused, with no reindex. If the move
 ///    cannot be done safely, the skip is reported and it falls through to step 4.
-///    Every skip first checks the new path for leftover index state, and refuses
-///    if some is there, including an `identity:` override (`NotOriginIdentity`).
+///    Every skip in this step first checks the new path for leftover index state,
+///    and refuses if some is there, including an `identity:` override
+///    (`NotOriginIdentity`). This guard lives inside step 3b, so it does not
+///    cover an explicit name or an identity-less checkout: those register fresh
+///    at step 4 without it.
 ///    Exception: when the rollback left index files split (or the row state is
 ///    unknown), registration is refused with `LievoError::RepoStateUnknown`, so
 ///    nothing indexes the new path over the split files.

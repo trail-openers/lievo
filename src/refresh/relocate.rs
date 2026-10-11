@@ -22,6 +22,10 @@
 //! row still names the old path. Nothing finishes this automatically, and
 //! `register()` refuses to register fresh at the new path (it returns
 //! `LievoError::RepoStateUnknown`), so nothing indexes over the split files.
+//! This holds only for registrations that reach relocation (an auto name, an
+//! origin or override identity, and a vanished same-identity row). An explicit
+//! `--project` name or an identity-less checkout registers fresh without this
+//! check.
 //! That refusal is sticky: a later `register()` still sees the leftover state
 //! at the new hash (see [`leftover_index_state`]) and keeps refusing. The
 //! leftover check runs after every skip, including `NotOriginIdentity` (an
