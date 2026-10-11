@@ -12,6 +12,8 @@ use std::time::Duration;
 pub const MODEL_ID: &str = "minishlab/potion-code-16M-v2";
 /// Timeout for model download (in seconds). Allows ~16MB+ downloads on slow links.
 const MODEL_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
+/// Remediation shown wherever the HF cache directory is the likely cause of a failure.
+const CACHE_OVERRIDE_HINT: &str = "set HF_HOME or HF_HUB_CACHE to a writable directory to override";
 
 /// Ensures the potion-code-16M-v2 model artefacts are downloaded (cached under
 /// the HuggingFace hub cache) and returns the directory containing them.
@@ -65,33 +67,53 @@ pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
 /// support from `ApiBuilder::from_env`.
 ///
 /// Uses `from_cache`, not `from_env().with_cache_dir()`: the latter would read the
-/// token from the default cache. A non-UTF-8 `HF_ENDPOINT` is intentionally ignored,
-/// since endpoints are URLs and must be UTF-8 anyway.
-fn api_for_cache(cache_dir: &Path) -> Result<Api, hf_hub::api::sync::ApiError> {
+/// token from the default cache. A set `HF_ENDPOINT` that is not UTF-8 or not an
+/// allowed scheme is an error, not ignored: a user who configured a mirror must not
+/// be silently sent to the default hub.
+fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
     let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()));
-    if let Some(endpoint) = non_empty_env("HF_ENDPOINT").and_then(|v| v.into_string().ok()) {
+    if let Some(raw) = non_empty_env("HF_ENDPOINT") {
+        let endpoint = raw.into_string().map_err(|_| {
+            crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
+        })?;
+        if !endpoint_is_allowed(&endpoint) {
+            return Err(crate::LievoError::RetrievalError(format!(
+                "HF_ENDPOINT {endpoint} must use https://, or http:// only for localhost or 127.0.0.1"
+            )));
+        }
         builder = builder.with_endpoint(endpoint);
     }
-    builder.build()
+    builder.build().map_err(|e| {
+        crate::LievoError::RetrievalError(format!(
+            "failed to init HuggingFace API (HF cache dir {}; {CACHE_OVERRIDE_HINT}): {e}",
+            cache_dir.display()
+        ))
+    })
+}
+
+/// Endpoints deliver the model artefacts, so plain `http://` is limited to loopback
+/// (mirrors on this machine and tests); anything else must use TLS.
+fn endpoint_is_allowed(endpoint: &str) -> bool {
+    if endpoint.starts_with("https://") {
+        return true;
+    }
+    ["http://127.0.0.1", "http://localhost"].iter().any(|host| {
+        endpoint
+            .strip_prefix(host)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+    })
 }
 
 /// Internal function that performs the actual download.
 fn do_download() -> crate::Result<PathBuf> {
     let cache_dir = resolve_hf_cache_dir();
-    // Only the init failure gets the writable-directory advice: it is the step where
-    // a bad cache dir is the plausible cause.
-    let api = api_for_cache(&cache_dir).map_err(|e| {
-        crate::LievoError::RetrievalError(format!(
-            "failed to init HuggingFace API (HF cache dir {}; set HF_HOME or HF_HUB_CACHE to a writable directory to override): {e}",
-            cache_dir.display()
-        ))
-    })?;
+    let api = api_for_cache(&cache_dir)?;
 
     let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
     // Every download failure names the cache dir and the override, since a read-only or
     // unwritable cache surfaces here as an io error from `repo.get`.
     let cache_context = format!(
-        "HF cache dir {}; set HF_HOME or HF_HUB_CACHE to a writable directory to override",
+        "HF cache dir {}; {CACHE_OVERRIDE_HINT}",
         cache_dir.display()
     );
     let fetch = |artifact: &str| {
@@ -115,29 +137,15 @@ fn do_download() -> crate::Result<PathBuf> {
 }
 
 /// Directory containing the downloaded model snapshot (the parent of the
-/// tokenizer artefact in the HuggingFace hub cache), without checking that it
-/// exists and WITHOUT downloading — used by `lievo doctor` for a read-only
-/// "model present on disk" check. `None` when the model has not been
-/// downloaded yet. `Err` when the HF API client cannot be initialised, so the
-/// caller can report the cause instead of mistaking it for a missing model.
-pub fn model_dir() -> crate::Result<Option<PathBuf>> {
-    let Some(tokenizer) = repo_get(MODEL_ID, "tokenizer.json")? else {
-        return Ok(None);
-    };
-    Ok(tokenizer.parent().map(Path::to_path_buf))
-}
-
-/// Non-downloading lookup of a model artefact in the HF hub cache.
-fn repo_get(id: &str, artifact: &str) -> crate::Result<Option<PathBuf>> {
-    let cache_dir = resolve_hf_cache_dir();
-    let api = api_for_cache(&cache_dir).map_err(|e| {
-        crate::LievoError::RetrievalError(format!(
-            "failed to init HuggingFace API (HF cache dir {}): {e}",
-            cache_dir.display()
-        ))
-    })?;
-    let repo = api.repo(Repo::new(id.to_string(), RepoType::Model));
-    Ok(repo.get(artifact).ok().map(|f| f.to_path_buf()))
+/// tokenizer artefact in the HuggingFace hub cache). Reads only the on-disk cache:
+/// it never downloads and never touches the network, so `lievo doctor` can call
+/// it safely. `None` when the model has not been downloaded yet.
+pub fn model_dir() -> Option<PathBuf> {
+    let cache = Cache::new(resolve_hf_cache_dir());
+    let tokenizer = cache
+        .repo(Repo::new(MODEL_ID.to_string(), RepoType::Model))
+        .get("tokenizer.json")?;
+    tokenizer.parent().map(Path::to_path_buf)
 }
 
 /// Index-staleness detection for the on-disk vector index.
@@ -274,7 +282,8 @@ mod tests {
 
     #[test]
     fn do_download_error_names_cache_path() {
-        let dir = std::env::temp_dir().join(format!("lievo-dl-err-{}", std::process::id()));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_path_buf();
         let _guard = HfEnvGuard::set(&[
             ("HF_HOME", None),
             ("HF_HUB_CACHE", Some(dir.to_str().expect("utf-8 temp dir"))),
@@ -287,7 +296,51 @@ mod tests {
         assert!(msg.contains("failed to download"), "{msg}");
         assert!(msg.contains(&dir.display().to_string()), "{msg}");
         assert!(msg.contains("HF_HUB_CACHE"), "{msg}");
-        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn endpoint_allows_https_and_loopback_http_only() {
+        assert!(endpoint_is_allowed("https://hf.example.com"));
+        assert!(endpoint_is_allowed("http://127.0.0.1:8080"));
+        assert!(endpoint_is_allowed("http://localhost"));
+        assert!(!endpoint_is_allowed("http://hf.example.com"));
+        assert!(!endpoint_is_allowed("http://localhost.evil.com"));
+    }
+
+    #[test]
+    fn api_for_cache_rejects_plain_http_endpoint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", None),
+            ("HF_HUB_CACHE", None),
+            ("HF_ENDPOINT", Some("http://mirror.example.com")),
+        ]);
+        let msg = api_for_cache(tmp.path())
+            .expect_err("plain http endpoint must be rejected")
+            .to_string();
+        assert!(msg.contains("HF_ENDPOINT"), "{msg}");
+    }
+
+    #[test]
+    fn model_dir_finds_cached_tokenizer_without_network() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", None),
+            (
+                "HF_HUB_CACHE",
+                Some(root.path().to_str().expect("utf-8 temp dir")),
+            ),
+            ("HF_ENDPOINT", Some("http://127.0.0.1:1")),
+        ]);
+        assert_eq!(model_dir(), None);
+
+        let repo = root.path().join("models--minishlab--potion-code-16M-v2");
+        std::fs::create_dir_all(repo.join("refs")).expect("create refs");
+        std::fs::write(repo.join("refs/main"), "abc123").expect("write ref");
+        let snapshot = repo.join("snapshots/abc123");
+        std::fs::create_dir_all(&snapshot).expect("create snapshot");
+        std::fs::write(snapshot.join("tokenizer.json"), "{}").expect("write tokenizer");
+        assert_eq!(model_dir(), Some(snapshot));
     }
 
     #[test]
