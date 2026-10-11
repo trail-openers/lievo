@@ -1,78 +1,93 @@
 //! Project-name candidates for registration (issue #29). Naming only proposes
 //! a name; `attach.rs` decides whether that name is created, reused, or
 //! re-picked.
+//!
+//! Rules: without an identity, `<dir>`, `<dir>-2`, `<dir>-3`, …. With an
+//! identity, no numeric suffixes are ever used: the bare name, then
+//! `<owner>/<repo>`, and otherwise the name is unavailable (`InvalidInput`).
 
 use super::lookup::project_holds_identity;
+use crate::LievoError;
 use crate::storage::Storage;
 use std::path::Path;
 
-/// The owner-prefixed name (`<owner>/<repo>`) extracted from an identity key
-/// (`"github.com/owner/repo"` → `"owner/repo"`); falls back to `<dir>-2`
-/// (the directory name, `dir_name`) when the owner cannot be determined.
-fn owner_prefixed_name(identity: &str, dir_name: &str) -> String {
+/// The owner-prefixed name (`<owner>/<repo>`) from an identity key: the last
+/// two segments, so `github.com/owner/repo` and `owner/repo` both yield
+/// `owner/repo`. `None` when the key has no owner segment.
+fn owner_prefixed_name(identity: &str) -> Option<String> {
     let parts: Vec<&str> = identity.split('/').collect();
-    let repo = parts.last().copied().unwrap_or("");
-    if let Some(owner) = parts.get(1)
-        && !owner.is_empty()
-        && !repo.is_empty()
-    {
-        return format!("{owner}/{repo}");
+    if parts.len() < 2 {
+        return None;
     }
-    format!("{dir_name}-2")
+    let owner = parts[parts.len() - 2];
+    let repo = parts[parts.len() - 1];
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }
 
-/// Candidate `n` of `base` in the single suffix sequence: `base`, then
-/// `base-2`, `base-3`, …
-fn candidate_name(base: &str, n: usize) -> String {
-    if n == 0 {
-        base.to_string()
-    } else {
-        format!("{base}-{}", n + 1)
+/// The error for an identity-bearing name that no free candidate is left for.
+fn name_unavailable(base: &str) -> LievoError {
+    LievoError::InvalidInput(format!(
+        "project name '{}' is taken by a different identity; pass --project <name> to choose one",
+        super::sanitize(base)
+    ))
+}
+
+/// First free `base`, `base-2`, `base-3`, … (no identity, so no owner names).
+fn first_free_suffix(storage: &dyn Storage, base: &str) -> crate::Result<String> {
+    let base = if base.is_empty() { "repo" } else { base };
+    let mut candidate = base.to_string();
+    let mut n = 2;
+    while storage.get_project(&candidate)?.is_some() {
+        candidate = format!("{base}-{n}");
+        n += 1;
     }
+    Ok(candidate)
 }
 
 /// Name for a fresh (non-twin) registration. An explicit name never reaches
-/// here. Precedence: the bare `dir_name` when free and an identity exists or
-/// none does; with an identity, `<owner>/<repo>` once `dir_name` is taken;
-/// otherwise the suffix sequence on `dir_name`.
+/// here. Only a free name is returned, never a project reused on identity
+/// alone (a vanished-only identity holder is not reattached; issue #30).
+/// Without an identity: `dir_name`, then `-2`, `-3`, …. With an identity:
+/// `dir_name` if free, else `<owner>/<repo>` if free, else an error.
 pub(super) fn pick_fresh_name(
     storage: &dyn Storage,
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<String> {
-    let base = match identity {
-        None => dir_name.to_string(),
-        Some(identity) => {
-            if storage.get_project(dir_name)?.is_none() {
-                return Ok(dir_name.to_string());
-            }
-            owner_prefixed_name(identity, dir_name)
-        }
+    let Some(identity) = identity else {
+        return first_free_suffix(storage, dir_name);
     };
-    pick_name(storage, &base, identity)
+    if storage.get_project(dir_name)?.is_none() {
+        return Ok(dir_name.to_string());
+    }
+    let prefixed = owner_prefixed_name(identity).ok_or_else(|| name_unavailable(dir_name))?;
+    if storage.get_project(&prefixed)?.is_none() {
+        return Ok(prefixed);
+    }
+    Err(name_unavailable(&prefixed))
 }
 
-/// First candidate of `base` that attach will accept: a name no project holds,
-/// or one already held by `identity`. Selects only; it creates and attaches
-/// nothing.
+/// Name for a live same-identity twin (`<repo>@<dir>`). Returns `base` when it
+/// is free or already held by `identity`, where the checkout joins it. Any
+/// other holder makes the name unavailable; there is no suffix for an
+/// identity-bearing name.
 pub(super) fn pick_name(
     storage: &dyn Storage,
     base: &str,
-    identity: Option<&str>,
+    identity: &str,
 ) -> crate::Result<String> {
-    let base = if base.is_empty() { "repo" } else { base };
-    let mut n = 0;
-    loop {
-        let candidate = candidate_name(base, n);
-        match storage.get_project(&candidate)? {
-            None => return Ok(candidate),
-            Some(project) => {
-                if project_holds_identity(storage, &project.id, identity)? {
-                    return Ok(candidate);
-                }
+    match storage.get_project(base)? {
+        None => Ok(base.to_string()),
+        Some(project) => {
+            if project_holds_identity(storage, &project.id, Some(identity))? {
+                Ok(base.to_string())
+            } else {
+                Err(name_unavailable(base))
             }
         }
-        n += 1;
     }
 }
 
@@ -97,4 +112,23 @@ pub(super) fn repo_short_name(identity: &str) -> String {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| "repo".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owner_prefixed_name;
+
+    #[test]
+    fn owner_prefixed_name_takes_owner_from_second_to_last_segment() {
+        assert_eq!(
+            owner_prefixed_name("github.com/acme/tool").as_deref(),
+            Some("acme/tool")
+        );
+        assert_eq!(
+            owner_prefixed_name("acme/tool").as_deref(),
+            Some("acme/tool"),
+            "a host-less two-segment key must not yield tool/tool"
+        );
+        assert_eq!(owner_prefixed_name("tool"), None);
+    }
 }

@@ -4,7 +4,7 @@
 
 use super::RegistrationRequest;
 use super::attach::{Checkout, NameSource, attach_picked};
-use super::naming::pick_name;
+use super::naming::pick_fresh_name;
 use super::register;
 use crate::LievoError;
 use crate::storage::Storage;
@@ -27,6 +27,12 @@ fn claim(storage: &dyn Storage, name: &str, path: &str, identity: &str) {
         .expect("name must be free to claim");
     let repo = storage.add_repo(&project.id, name, path).unwrap();
     storage.set_repo_git_url(&repo.id, identity).unwrap();
+}
+
+#[test]
+fn sanitize_strips_control_and_bidi_format_characters() {
+    assert_eq!(super::sanitize("a\u{1b}[2Jb"), "a[2Jb");
+    assert_eq!(super::sanitize("x\u{202e}y\u{200b}z"), "xyz");
 }
 
 #[test]
@@ -110,7 +116,7 @@ fn auto_name_claimed_by_another_identity_before_attach_is_repicked() {
             claim(st, "racy", "/elsewhere", "github.com/other/racy");
             return Ok("racy".to_string());
         }
-        pick_name(st, "racy", Some("github.com/acme/racy"))
+        pick_fresh_name(st, "racy", Some("github.com/acme/racy"))
     };
     let checkout = Checkout {
         root: "/work/racy",
@@ -120,7 +126,10 @@ fn auto_name_claimed_by_another_identity_before_attach_is_repicked() {
 
     let resolved = attach_picked(&s, NameSource::Auto, pick, &checkout).unwrap();
 
-    assert_eq!(resolved.project.name, "racy-2");
+    assert_eq!(
+        resolved.project.name, "acme/racy",
+        "identity-bearing re-pick uses the owner name, never a numeric suffix"
+    );
     let claimed = s.get_project("racy").unwrap().expect("claimed project");
     let claimed_repos = s.list_repos(&claimed.id).unwrap();
     assert_eq!(
@@ -129,6 +138,51 @@ fn auto_name_claimed_by_another_identity_before_attach_is_repicked() {
         "the other identity's project is untouched"
     );
     assert_eq!(claimed_repos[0].local_path, "/elsewhere");
+}
+
+#[test]
+fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
+    let s = SqliteStorage::open_in_memory().unwrap();
+    // `acme/tool` is held only by a vanished checkout (its path is gone).
+    let gone = TempDir::new().unwrap();
+    let gone_root = gone.path().join("gone");
+    claim(
+        &s,
+        "acme/tool",
+        gone_root.to_str().unwrap(),
+        "github.com/acme/tool",
+    );
+    // Occupy the bare dir name with a different identity so the fresh pick
+    // would need `acme/tool`.
+    claim(&s, "tool", "/elsewhere", "github.com/other/tool");
+
+    let (_d, root) = checkout_dir("tool");
+    let git = git2::Repository::init(&root).unwrap();
+    git.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/tool")
+        .unwrap();
+    let result = register(
+        &s,
+        &RegistrationRequest {
+            repo_root: &root,
+            project_name: None,
+        },
+    );
+
+    assert!(
+        matches!(result, Err(LievoError::InvalidInput(_))),
+        "must not reattach to the vanished holder; got {result:?}"
+    );
+    let vanished = s
+        .get_project("acme/tool")
+        .unwrap()
+        .expect("vanished project");
+    assert_eq!(
+        s.list_repos(&vanished.id).unwrap().len(),
+        1,
+        "the vanished project must not gain the new checkout"
+    );
 }
 
 #[test]

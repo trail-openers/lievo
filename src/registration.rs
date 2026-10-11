@@ -110,7 +110,9 @@ pub fn register(
     // Load the repository's own configuration here (rather than trusting a
     // caller-supplied default) so the `identity:` override in
     // `<repo_root>/.lievo/config.yaml` is honored identically by MCP and CLI.
-    let config = RepoConfig::load_or_default(request.repo_root);
+    // An invalid override is a hard error (not a silent fallback to the
+    // origin-derived identity), matching the CLI's other config failures.
+    let config = RepoConfig::load(request.repo_root)?.unwrap_or_default();
 
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);
@@ -165,7 +167,7 @@ pub fn register(
             return attach_picked(
                 storage,
                 NameSource::Auto,
-                |st: &dyn Storage| pick_name(st, &base, Some(identity)),
+                |st: &dyn Storage| pick_name(st, &base, identity),
                 &checkout,
             );
         }
@@ -199,7 +201,13 @@ pub fn register(
 pub fn sanitize(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| {
+            !(c.is_control()
+                || matches!(
+                    c,
+                    '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                ))
+        })
         .take(200)
         .collect()
 }
