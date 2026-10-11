@@ -193,7 +193,11 @@ fn auto_name_claimed_by_another_identity_before_attach_is_repicked() {
 }
 
 #[test]
-fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
+fn moved_checkout_reuses_vanished_holder_of_same_identity() {
+    // A moved checkout re-keys the vanished row (issue #30), which touches the
+    // lievo data dir, so HOME must be isolated.
+    let home = TempDir::new().unwrap();
+    let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
     let s = SqliteStorage::open_in_memory().unwrap();
     // `acme/tool` is held only by a vanished checkout (its path is gone).
     let gone = TempDir::new().unwrap();
@@ -224,10 +228,13 @@ fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
     .unwrap();
 
     assert_eq!(
-        resolved.project.name, "acme/tool-2",
-        "fresh registration takes the first free owner name, never the vanished holder"
+        resolved.project.name, "acme/tool",
+        "a moved checkout reuses the vanished project of the same identity"
     );
-    assert_ne!(resolved.project.name, "acme/tool");
+    assert_eq!(
+        resolved.repo.local_path,
+        root.canonicalize().unwrap().to_str().unwrap()
+    );
     assert_eq!(
         resolved.repo.git_url.as_deref(),
         Some("github.com/acme/tool")
@@ -236,13 +243,11 @@ fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
         .get_project("acme/tool")
         .unwrap()
         .expect("vanished project");
-    let vanished_repos = s.list_repos(&vanished.id).unwrap();
-    assert_eq!(
-        vanished_repos.len(),
-        1,
-        "the vanished project must not gain the new checkout"
-    );
-    assert_eq!(vanished_repos[0].local_path, gone_root.to_str().unwrap());
+    let repos = s.list_repos(&vanished.id).unwrap();
+    assert_eq!(repos.len(), 1, "the same row moved, no second row is added");
+    assert_eq!(repos[0].id, resolved.repo.id);
+    assert_ne!(repos[0].local_path, gone_root.to_str().unwrap());
+    assert_eq!(s.list_projects().unwrap().len(), 2);
 }
 
 #[test]

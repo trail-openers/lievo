@@ -21,7 +21,9 @@ mod tests;
 
 use crate::LievoError;
 use crate::config::RepoConfig;
+use crate::extraction::lievo_data_dir;
 use crate::identity::derive_identity;
+use crate::refresh::relocate::{self, relocate_checkout};
 use crate::storage::Storage;
 use attach::{Checkout, NameSource, attach_picked};
 use lookup::{backfill_git_url, path_exists};
@@ -71,12 +73,21 @@ pub struct RegistrationRequest<'a> {
 ///    `<repo>@<dir>`, reusing that project when it already holds this
 ///    identity, otherwise the next free suffix. It is never moved and never
 ///    attached to the twin's own project.
+///
+/// 3b. **Moved checkout** (auto name, no live twin): a same-identity repo whose
+///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
+///    The same project and repo row are reused, with no reindex. If the move
+///    cannot be done safely, it falls through to step 4. Trust note: identity
+///    may come from a `.lievo/config.yaml` `identity:` override, so an override
+///    claiming a vanished identity takes over that project's row, index and
+///    entity ids.
 /// 4. **Fresh registration** — the explicit name as given, or for an auto name
 ///    the first free of `<dir>`; then, with an identity, `<owner>/<repo>`,
 ///    `<owner>/<repo>-2`, `-3`, …; without one, `<dir>-2`, `-3`, …. Auto naming
-///    always succeeds. A same-identity repo whose stored path has vanished
-///    falls through to here until issue #30 adds move handling, and never
-///    reattaches to that vanished project.
+///    always succeeds. A vanished same-identity project is never reattached
+///    here.
+///
+/// An explicit name skips step 3b and registers fresh, as before.
 ///
 /// Attaching (`attach::attach_picked`): an auto name is reused only when its
 /// project already holds this identity at a live checkout. If a concurrent
@@ -171,6 +182,30 @@ pub fn register(
                 |st: &dyn Storage| pick_name(st, &base, identity),
                 &checkout,
             );
+        }
+        // Step 3b (issue #30): no live twin, so a vanished checkout of this
+        // identity may have moved here. Re-key its row instead of registering
+        // a fresh project. A failed move falls through to step 4.
+        if let Some(vanished) = matches.first() {
+            let attempt = match lievo_data_dir() {
+                Ok(data_dir) => relocate_checkout(storage, vanished, request.repo_root, &data_dir)?,
+                Err(e) => relocate::fall_back(
+                    &vanished.local_path,
+                    &request.repo_root.display().to_string(),
+                    &e.to_string(),
+                )?,
+            };
+            if let Some(moved) = attempt {
+                let project = storage
+                    .get_project_by_id(&moved.project_id)?
+                    .ok_or_else(|| {
+                        LievoError::InvalidInput(format!("project missing for repo {}", moved.id))
+                    })?;
+                return Ok(ResolvedRepo {
+                    project,
+                    repo: moved,
+                });
+            }
         }
     }
 

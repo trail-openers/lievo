@@ -71,7 +71,13 @@ pub fn lock_path(repo_path: &Path) -> Result<PathBuf, std::io::Error> {
 
 /// Per-repo lock file path under an explicit directory. `acquire_in_dir` / `indexing_status_in_dir` use this so tests can point the lock at a unique temp dir instead of the real data dir (issue #864 follow-up: the data dir is a hash of the repo path, so tests that share it interfere with each other).
 pub(crate) fn lock_path_in_dir(repo_path: &Path, dir: &Path) -> Result<PathBuf, std::io::Error> {
-    Ok(dir.join(format!("lock-{}.lock", repo_hash(repo_path)?)))
+    Ok(lock_path_for_hash(dir, &repo_hash(repo_path)?))
+}
+
+/// Lock file path for a precomputed repo hash (relocation re-keys by hash, since
+/// a vanished checkout cannot be canonicalised).
+pub(crate) fn lock_path_for_hash(dir: &Path, hash: &str) -> PathBuf {
+    dir.join(format!("lock-{hash}.lock"))
 }
 
 /// Per-repo status file path (beside the lock).
@@ -81,7 +87,12 @@ pub fn status_path(repo_path: &Path) -> Result<PathBuf, std::io::Error> {
 
 /// Per-repo status file path under an explicit directory (see `lock_path_in_dir`).
 pub(crate) fn status_path_in_dir(repo_path: &Path, dir: &Path) -> Result<PathBuf, std::io::Error> {
-    Ok(dir.join(format!("status-{}.json", repo_hash(repo_path)?)))
+    Ok(status_path_for_hash(dir, &repo_hash(repo_path)?))
+}
+
+/// Status file path for a precomputed repo hash (see `lock_path_for_hash`).
+pub(crate) fn status_path_for_hash(dir: &Path, hash: &str) -> PathBuf {
+    dir.join(format!("status-{hash}.json"))
 }
 
 /// Hash-suffix key shared by the lock and status file names. `repo_hash`

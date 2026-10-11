@@ -10,12 +10,17 @@ pub fn repo_hash(repo_path: &Path) -> Result<String> {
         .map_err(|e| LievoError::InvalidInput(format!("Failed to canonicalize repo path: {}", e)))?
         .to_string_lossy()
         .to_string();
+    Ok(hash_canonical_path(&path_str))
+}
 
+/// Hash an already-canonical path string. Relocation (issue #30) needs this for
+/// a stored path that has vanished, which `canonicalize` cannot resolve.
+pub fn hash_canonical_path(canonical: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(path_str.as_bytes());
+    hasher.update(canonical.as_bytes());
     let hash = hasher.finalize();
     let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
-    Ok(hex[0..16].to_string())
+    hex[0..16].to_string()
 }
 
 /// Get the lievo data directory (~/.lievo/).
