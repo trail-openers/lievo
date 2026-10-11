@@ -24,10 +24,10 @@
 //! `LievoError::RepoStateUnknown`), so nothing indexes over the split files.
 //! That refusal is sticky: a later `register()` still sees the leftover state
 //! at the new hash (see [`leftover_index_state`]) and keeps refusing. The
-//! leftover check runs after every skip except `NotOriginIdentity`, which covers
-//! `identity:` overrides and returns before anything is touched. Transient
-//! skips, such as a busy or failed lock, a storage read error or a data-dir
-//! error, are checked too, so they cannot register fresh over split state left
+//! leftover check runs after every skip, including `NotOriginIdentity` (an
+//! `identity:` override), so a repo-controlled override cannot register fresh
+//! over split state either. Transient skips, such as a busy or failed lock, a
+//! storage read error or a data-dir error, are checked too, so they cannot register fresh over split state left
 //! by an earlier run. Recovery is manual: the error says which files to move
 //! back.
 //!

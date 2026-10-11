@@ -79,8 +79,8 @@ pub struct RegistrationRequest<'a> {
 ///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
 ///    The same project and repo row are reused, with no reindex. If the move
 ///    cannot be done safely, the skip is reported and it falls through to step 4.
-///    Any skip except `NotOriginIdentity` first checks the new path for leftover
-///    index state, and refuses if some is there.
+///    Every skip first checks the new path for leftover index state, and refuses
+///    if some is there, including an `identity:` override (`NotOriginIdentity`).
 ///    Exception: when the rollback left index files split (or the row state is
 ///    unknown), registration is refused with `LievoError::RepoStateUnknown`, so
 ///    nothing indexes the new path over the split files.
@@ -194,16 +194,12 @@ pub fn register(
         // identity may have moved here. Re-key its row instead of registering
         // a fresh project. A skipped move falls through to step 4. The
         // provenance gate (origin-only) lives in `relocate_checkout`.
+        // With several vanished rows sharing this identity, only the first is
+        // considered; the others are left untouched.
         if let Some(vanished) = matches.first()
             && let Some(ident) = derived.as_ref()
         {
             let outcome = relocate_checkout(storage, vanished, request.repo_root, ident);
-            // Every skip except NotOriginIdentity is guarded by the leftover check
-            // below. NotOriginIdentity returns before anything is touched.
-            let guard_leftovers = !matches!(
-                outcome,
-                RelocateOutcome::Skipped(SkipReason::NotOriginIdentity)
-            );
             // A skip is reported only after the leftover check passes: when
             // the guard refuses, its notice is the one message printed.
             let mut skipped = None;
@@ -226,8 +222,8 @@ pub fn register(
                         repo: *repo,
                     });
                 }
-                // Not an origin identity: a repo-controlled override never
-                // moves a row, silently, as before.
+                // Not an origin identity: no move and no notice. The leftover
+                // check below still applies.
                 RelocateOutcome::Skipped(SkipReason::NotOriginIdentity) => {}
                 // The row's state is unknown: registering fresh here could
                 // share the index directory with the files left behind.
@@ -252,25 +248,23 @@ pub fn register(
             // Sticky refusal: a skip must not fall through to a fresh registration
             // while index state already sits at the new hash. The row still names
             // the old path here, so that state is a leftover of an earlier run,
-            // for example a failed rollback. Transient skips (busy or failed lock,
-            // storage read error, data-dir error) are checked too. Fails closed.
-            if guard_leftovers {
-                match leftover_index_state(request.repo_root) {
-                    Ok(leftovers) if leftovers.is_empty() => {}
-                    Ok(leftovers) => {
-                        return Err(LievoError::RepoStateUnknown(leftover_state_notice(
-                            &vanished.local_path,
-                            repo_root_str,
-                            &leftovers,
-                        )));
-                    }
-                    Err(e) => {
-                        return Err(LievoError::RepoStateUnknown(leftover_check_notice(
-                            &vanished.local_path,
-                            repo_root_str,
-                            &e,
-                        )));
-                    }
+            // for example a failed rollback. Applies to every skip, including
+            // override identities and transient skips. Fails closed.
+            match leftover_index_state(request.repo_root) {
+                Ok(leftovers) if leftovers.is_empty() => {}
+                Ok(leftovers) => {
+                    return Err(LievoError::RepoStateUnknown(leftover_state_notice(
+                        &vanished.local_path,
+                        repo_root_str,
+                        &leftovers,
+                    )));
+                }
+                Err(e) => {
+                    return Err(LievoError::RepoStateUnknown(leftover_check_notice(
+                        &vanished.local_path,
+                        repo_root_str,
+                        &e,
+                    )));
                 }
             }
             if let Some(reason) = skipped {

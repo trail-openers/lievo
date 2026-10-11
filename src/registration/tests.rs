@@ -493,6 +493,46 @@ fn vanished_row_with_trailing_slash_path_registers_fresh() {
 }
 
 #[test]
+fn override_identity_with_leftover_index_dir_is_refused() {
+    // An override never moves a row, but an index directory already at the new
+    // hash is split state a fresh registration would share. It must refuse.
+    let home = TempDir::new().unwrap();
+    let _env = crate::test_env_support::EnvGuard::new(&home.path().join("db.sqlite"));
+    let data = crate::layout::lievo_data_dir().unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let gone = TempDir::new().unwrap();
+    let gone_root = gone.path().join("gone");
+    claim(
+        &s,
+        "acme/tool",
+        gone_root.to_str().unwrap(),
+        "github.com/acme/tool",
+    );
+    let (_d, root) = checkout_dir("tool");
+    std::fs::create_dir_all(root.join(".lievo")).unwrap();
+    std::fs::write(
+        root.join(".lievo/config.yaml"),
+        "identity: github.com/acme/tool\n",
+    )
+    .unwrap();
+    let new_hash = crate::layout::repo_hash(&root).unwrap();
+    let leftover = crate::layout::index_dir_for_hash(&data, &new_hash);
+    std::fs::create_dir_all(&leftover).unwrap();
+    let request = RegistrationRequest {
+        repo_root: &root,
+        project_name: None,
+    };
+
+    let Err(err) = register(&s, &request) else {
+        panic!("an override over leftover new-hash state must refuse registration");
+    };
+    assert!(matches!(err, LievoError::RepoStateUnknown(_)), "{err:?}");
+    assert_eq!(s.list_projects().unwrap().len(), 1, "nothing registered");
+    assert!(leftover.exists(), "the leftover state is left in place");
+}
+
+#[test]
 fn busy_old_lock_refuses_over_leftover_new_state() {
     // A transient skip (a live indexer holds the old hash's lock) must still
     // refuse while index state already sits at the new hash: a fresh
