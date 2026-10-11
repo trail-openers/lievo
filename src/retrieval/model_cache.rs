@@ -1,6 +1,6 @@
 // Model caching and download utilities for semantic search.
 
-use hf_hub::{Repo, RepoType, api::sync::Api};
+use hf_hub::{Cache, Repo, RepoType, api::sync::Api, api::sync::ApiBuilder};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -40,29 +40,75 @@ pub fn ensure_potion_code_model() -> crate::Result<PathBuf> {
     }
 }
 
+/// Resolves the HuggingFace hub cache directory the model lives in.
+///
+/// hf-hub 0.5.0's `Cache::from_env` only reads `HF_HOME`, so lievo resolves it
+/// itself: `HF_HUB_CACHE` (used as the hub dir directly), then `HF_HOME/hub`,
+/// then hf-hub's default `~/.cache/huggingface/hub`. Empty values are ignored.
+/// Download and lookup both go through this so they always agree.
+pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
+    let non_empty = |var: &str| {
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    if let Some(dir) = non_empty("HF_HUB_CACHE") {
+        return dir;
+    }
+    if let Some(home) = non_empty("HF_HOME") {
+        return home.join("hub");
+    }
+    Cache::default().path().clone()
+}
+
+/// Builds a HuggingFace API client rooted at `cache_dir`, keeping `HF_ENDPOINT`
+/// support from `ApiBuilder::from_env`.
+fn api_for_cache(cache_dir: &Path) -> Result<Api, hf_hub::api::sync::ApiError> {
+    let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()));
+    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
+        builder = builder.with_endpoint(endpoint);
+    }
+    builder.build()
+}
+
+/// Error-message suffix naming the cache path tried and how to override it.
+fn cache_hint(cache_dir: &Path) -> String {
+    format!(
+        "HF cache directory {}; set HF_HOME or HF_HUB_CACHE to a writable directory to override",
+        cache_dir.display()
+    )
+}
+
 /// Internal function that performs the actual download.
 fn do_download() -> crate::Result<PathBuf> {
-    let api = Api::new().map_err(|e| {
-        crate::LievoError::RetrievalError(format!("failed to init HuggingFace API: {e}"))
+    let cache_dir = resolve_hf_cache_dir();
+    let api = api_for_cache(&cache_dir).map_err(|e| {
+        crate::LievoError::RetrievalError(format!(
+            "failed to init HuggingFace API ({}): {e}",
+            cache_hint(&cache_dir)
+        ))
     })?;
 
     let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
+    let hint = cache_hint(&cache_dir);
 
     // Download all three artefacts model2vec needs; they share one snapshot dir.
     let tokenizer = repo.get("tokenizer.json").map_err(|e| {
         crate::LievoError::RetrievalError(format!(
-            "failed to download {MODEL_ID} tokenizer.json: {e}"
+            "failed to download {MODEL_ID} tokenizer.json: {e} ({hint})"
         ))
     })?;
 
     repo.get("model.safetensors").map_err(|e| {
         crate::LievoError::RetrievalError(format!(
-            "failed to download {MODEL_ID} model.safetensors: {e}"
+            "failed to download {MODEL_ID} model.safetensors: {e} ({hint})"
         ))
     })?;
 
     repo.get("config.json").map_err(|e| {
-        crate::LievoError::RetrievalError(format!("failed to download {MODEL_ID} config.json: {e}"))
+        crate::LievoError::RetrievalError(format!(
+            "failed to download {MODEL_ID} config.json: {e} ({hint})"
+        ))
     })?;
 
     let dir = tokenizer.parent().ok_or_else(|| {
@@ -85,7 +131,7 @@ pub fn model_dir() -> Option<PathBuf> {
 
 /// Non-downloading lookup of a model artefact in the HF hub cache.
 fn repo_get(id: &str, artifact: &str) -> Option<PathBuf> {
-    let api = Api::new().ok()?;
+    let api = api_for_cache(&resolve_hf_cache_dir()).ok()?;
     let repo = api.repo(Repo::new(id.to_string(), RepoType::Model));
     repo.get(artifact).ok().map(|f| f.to_path_buf())
 }
@@ -122,6 +168,108 @@ pub fn index_staleness_marker_matches(index_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sets/removes HF env vars for one test, holding the crate env lock, and
+    /// restores the originals on drop so nothing leaks into parallel tests.
+    struct HfEnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HfEnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = crate::test_env_support::env_lock();
+            let mut saved = Vec::new();
+            for (name, value) in vars {
+                saved.push((*name, std::env::var_os(name)));
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for HfEnvGuard {
+        fn drop(&mut self) {
+            for (name, original) in self.saved.drain(..).rev() {
+                unsafe {
+                    match original {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    const HF_VARS: [&str; 3] = ["HF_HOME", "HF_HUB_CACHE", "HF_ENDPOINT"];
+
+    fn cleared() -> Vec<(&'static str, Option<&'static str>)> {
+        HF_VARS.iter().map(|v| (*v, None)).collect()
+    }
+
+    #[test]
+    fn resolve_hf_cache_dir_defaults_to_hf_hub_default_when_nothing_set() {
+        let _guard = HfEnvGuard::set(&cleared());
+        assert_eq!(resolve_hf_cache_dir(), Cache::default().path().clone());
+    }
+
+    #[test]
+    fn resolve_hf_cache_dir_honours_hf_home() {
+        let mut vars = cleared();
+        vars[0] = ("HF_HOME", Some("/nonexistent-lievo-hf-home"));
+        let _guard = HfEnvGuard::set(&vars);
+        assert_eq!(
+            resolve_hf_cache_dir(),
+            PathBuf::from("/nonexistent-lievo-hf-home/hub")
+        );
+    }
+
+    #[test]
+    fn resolve_hf_cache_dir_honours_hf_hub_cache_verbatim() {
+        let mut vars = cleared();
+        vars[1] = ("HF_HUB_CACHE", Some("/nonexistent-lievo-hub-cache"));
+        let _guard = HfEnvGuard::set(&vars);
+        assert_eq!(
+            resolve_hf_cache_dir(),
+            PathBuf::from("/nonexistent-lievo-hub-cache")
+        );
+    }
+
+    #[test]
+    fn resolve_hf_cache_dir_hf_hub_cache_wins_over_hf_home() {
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", Some("/nonexistent-lievo-hf-home")),
+            ("HF_HUB_CACHE", Some("/nonexistent-lievo-hub-cache")),
+            ("HF_ENDPOINT", None),
+        ]);
+        assert_eq!(
+            resolve_hf_cache_dir(),
+            PathBuf::from("/nonexistent-lievo-hub-cache")
+        );
+    }
+
+    #[test]
+    fn resolve_hf_cache_dir_ignores_empty_values() {
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", Some("")),
+            ("HF_HUB_CACHE", Some("")),
+            ("HF_ENDPOINT", None),
+        ]);
+        assert_eq!(resolve_hf_cache_dir(), Cache::default().path().clone());
+    }
+
+    #[test]
+    fn cache_hint_names_path_and_overrides() {
+        let hint = cache_hint(Path::new("/ro/hub"));
+        assert!(hint.contains("/ro/hub"));
+        assert!(hint.contains("HF_HOME"));
+        assert!(hint.contains("HF_HUB_CACHE"));
+    }
 
     #[test]
     fn test_ensure_potion_code_model_network() {

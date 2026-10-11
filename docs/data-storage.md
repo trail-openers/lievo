@@ -26,7 +26,8 @@ Tree-sitter and vector search index for entity discovery. Used by `search_entiti
 **Structure:**
 - One subdirectory per analyzed repository under `~/.lievo/indices/`
 - Each repository subdirectory contains the tree-sitter index and usearch vector embeddings
-- Model weights (minishlab/potion-code-16M-v2, ~16MB) are automatically downloaded from Hugging Face on first use and cached locally
+- Model weights (minishlab/potion-code-16M-v2, ~16MB) are automatically downloaded from Hugging Face on first use and cached locally, by default in `~/.cache/huggingface/hub`
+- To use another location (e.g. a read-only default cache), set `HF_HUB_CACHE` to the hub cache directory, or `HF_HOME` to a directory whose `hub/` subdirectory holds the cache. `HF_HUB_CACHE` takes precedence over `HF_HOME`. `HF_ENDPOINT` is honoured when set.
 
 Created during `lievo refresh`.
 
