@@ -72,9 +72,11 @@ pub struct RegistrationRequest<'a> {
 ///    identity, otherwise the next free suffix. It is never moved and never
 ///    attached to the twin's own project.
 /// 4. **Fresh registration** — the explicit name as given, or for an auto name
-///    `<dir>` if free; else `<owner>/<repo>` when an identity exists; else
-///    `<dir>-2`, `-3`, …. A same-identity repo whose stored path has vanished
-///    falls through to here until issue #30 adds move handling.
+///    the first free of `<dir>`; then, with an identity, `<owner>/<repo>`,
+///    `<owner>/<repo>-2`, `-3`, …; without one, `<dir>-2`, `-3`, …. Auto naming
+///    always succeeds. A same-identity repo whose stored path has vanished
+///    falls through to here until issue #30 adds move handling, and never
+///    reattaches to that vanished project.
 ///
 /// Attaching (`attach::attach_picked`): an auto name is reused only when its
 /// project already holds this identity. If a concurrent registration claimed
@@ -110,9 +112,9 @@ pub fn register(
     // Load the repository's own configuration here (rather than trusting a
     // caller-supplied default) so the `identity:` override in
     // `<repo_root>/.lievo/config.yaml` is honored identically by MCP and CLI.
-    // An invalid override is a hard error (not a silent fallback to the
-    // origin-derived identity), matching the CLI's other config failures.
-    let config = RepoConfig::load(request.repo_root)?.unwrap_or_default();
+    // An invalid config warns and falls back to defaults (issue #28), so a bad
+    // file never fails registration; identity then comes from the origin.
+    let config = RepoConfig::load_or_default(request.repo_root);
 
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);

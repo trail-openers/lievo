@@ -3,8 +3,9 @@
 //! re-picked.
 //!
 //! Rules: without an identity, `<dir>`, `<dir>-2`, `<dir>-3`, …. With an
-//! identity, no numeric suffixes are ever used: the bare name, then
-//! `<owner>/<repo>`, and otherwise the name is unavailable (`InvalidInput`).
+//! identity, fresh names are the bare name, then `<owner>/<repo>`,
+//! `<owner>/<repo>-2`, …. Fresh naming always finds a free name. The live-twin
+//! name (`<repo>@<dir>`) never takes a suffix.
 
 use super::lookup::project_holds_identity;
 use crate::LievoError;
@@ -51,23 +52,21 @@ fn first_free_suffix(storage: &dyn Storage, base: &str) -> crate::Result<String>
 /// here. Only a free name is returned, never a project reused on identity
 /// alone (a vanished-only identity holder is not reattached; issue #30).
 /// Without an identity: `dir_name`, then `-2`, `-3`, …. With an identity:
-/// `dir_name` if free, else `<owner>/<repo>` if free, else an error.
+/// `dir_name` if free, else the first free of `<owner>/<repo>`,
+/// `<owner>/<repo>-2`, …. A derivable owner is always present for real
+/// identities; a key without one falls back to the identity-less suffixes.
 pub(super) fn pick_fresh_name(
     storage: &dyn Storage,
     dir_name: &str,
     identity: Option<&str>,
 ) -> crate::Result<String> {
-    let Some(identity) = identity else {
-        return first_free_suffix(storage, dir_name);
-    };
     if storage.get_project(dir_name)?.is_none() {
         return Ok(dir_name.to_string());
     }
-    let prefixed = owner_prefixed_name(identity).ok_or_else(|| name_unavailable(dir_name))?;
-    if storage.get_project(&prefixed)?.is_none() {
-        return Ok(prefixed);
+    match identity.and_then(owner_prefixed_name) {
+        Some(prefixed) => first_free_suffix(storage, &prefixed),
+        None => first_free_suffix(storage, dir_name),
     }
-    Err(name_unavailable(&prefixed))
 }
 
 /// Name for a live same-identity twin (`<repo>@<dir>`). Returns `base` when it

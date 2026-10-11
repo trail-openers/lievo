@@ -162,27 +162,78 @@ fn vanished_only_identity_holder_is_not_reattached_by_fresh_registration() {
         .unwrap()
         .set_str("remote.origin.url", "git@github.com:acme/tool")
         .unwrap();
-    let result = register(
+    let resolved = register(
         &s,
         &RegistrationRequest {
             repo_root: &root,
             project_name: None,
         },
-    );
+    )
+    .unwrap();
 
-    assert!(
-        matches!(result, Err(LievoError::InvalidInput(_))),
-        "must not reattach to the vanished holder; got {result:?}"
+    assert_eq!(
+        resolved.project.name, "acme/tool-2",
+        "fresh registration takes the first free owner name, never the vanished holder"
+    );
+    assert_ne!(resolved.project.name, "acme/tool");
+    assert_eq!(
+        resolved.repo.git_url.as_deref(),
+        Some("github.com/acme/tool")
     );
     let vanished = s
         .get_project("acme/tool")
         .unwrap()
         .expect("vanished project");
+    let vanished_repos = s.list_repos(&vanished.id).unwrap();
     assert_eq!(
-        s.list_repos(&vanished.id).unwrap().len(),
+        vanished_repos.len(),
         1,
         "the vanished project must not gain the new checkout"
     );
+    assert_eq!(vanished_repos[0].local_path, gone_root.to_str().unwrap());
+}
+
+#[test]
+fn fresh_identity_naming_walks_owner_suffixes_until_one_is_free() {
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let identity = Some("github.com/acme/tool");
+    claim(&s, "tool", "/a", "github.com/other/tool");
+    assert_eq!(pick_fresh_name(&s, "tool", identity).unwrap(), "acme/tool");
+    claim(&s, "acme/tool", "/b", "github.com/acme/tool");
+    assert_eq!(
+        pick_fresh_name(&s, "tool", identity).unwrap(),
+        "acme/tool-2"
+    );
+    claim(&s, "acme/tool-2", "/c", "github.com/acme/tool");
+    assert_eq!(
+        pick_fresh_name(&s, "tool", identity).unwrap(),
+        "acme/tool-3"
+    );
+}
+
+#[test]
+fn invalid_config_falls_back_to_origin_identity_and_registers() {
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let (_d, root) = checkout_dir("cfg");
+    let git = git2::Repository::init(&root).unwrap();
+    git.config()
+        .unwrap()
+        .set_str("remote.origin.url", "git@github.com:acme/cfg")
+        .unwrap();
+    std::fs::create_dir_all(root.join(".lievo")).unwrap();
+    std::fs::write(root.join(".lievo").join("config.yaml"), "identity: [\n").unwrap();
+    let request = RegistrationRequest {
+        repo_root: &root,
+        project_name: None,
+    };
+
+    let first = register(&s, &request).expect("invalid config must not fail registration");
+    assert_eq!(first.project.name, "cfg");
+    assert_eq!(first.repo.git_url.as_deref(), Some("github.com/acme/cfg"));
+
+    let again = register(&s, &request).expect("path match must also survive an invalid config");
+    assert_eq!(again.project.id, first.project.id);
+    assert_eq!(s.list_projects().unwrap().len(), 1);
 }
 
 #[test]
