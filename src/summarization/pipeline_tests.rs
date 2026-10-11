@@ -209,6 +209,11 @@ mod entities {
 
     #[test]
     fn test_summarize_functions_skips_test_prefix_functions() {
+        // summarize_functions reaches Command::new("apfel") directly for the
+        // non-test function, so hold the crate-wide env lock: otherwise a
+        // concurrent test's PATH-installed fake apfel can be invoked here and
+        // corrupt its invocation count (flaky apfel_server_tests, #869).
+        let _env_lock = crate::test_env_support::env_lock();
         // Verify that summarize_functions skips functions with test_ prefix,
         // matching preserve_functions behavior (issue #560).
         // A normal function should be summarized; a test_ prefix function should not.

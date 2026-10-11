@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn test_try_load_semantic_searcher_model_failure_msg_contains_guidance() {
+    // Holds the env lock: the model load reads HF_HOME / HF_HUB_CACHE / HF_ENDPOINT.
+    let _env_lock = crate::test_env_support::env_lock();
     // Use a temp dir that doesn't exist to force model load failure
     let nonexistent_path = "/nonexistent/index/path/that/does/not/exist";
     let (searcher_opt, warning_opt) = try_load_semantic_searcher(nonexistent_path);

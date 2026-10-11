@@ -592,6 +592,7 @@ fn bundle_missing_file_named_in_not_shown_and_not_silent() {
 
 #[test]
 fn bundle_identical_request_is_byte_identical() {
+    let _env_lock = crate::test_env_support::env_lock();
     let build = || -> String {
         let (storage, project_id, repo_id) = setup();
         let tmp = tempfile::tempdir().unwrap();
@@ -613,8 +614,7 @@ fn bundle_identical_request_is_byte_identical() {
         tool.call(json!({"bundle": "src"}))
             .expect("call must succeed")
     };
-    let a = build();
-    let b = build();
+    let (a, b) = (build(), build());
     assert_eq!(a, b, "identical bundle requests must be byte-identical");
 }
 

@@ -1,6 +1,9 @@
 // Model caching and download utilities for semantic search.
 
-use hf_hub::{Repo, RepoType, api::sync::Api};
+use hf_hub::{
+    Cache, Repo, RepoType,
+    api::sync::{Api, ApiBuilder, ApiError},
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -10,8 +13,14 @@ use std::time::Duration;
 /// Shared with `usearch_searcher` so the on-disk index staleness marker and
 /// the model actually loaded can never drift apart.
 pub const MODEL_ID: &str = "minishlab/potion-code-16M-v2";
+/// Largest refs/<revision> entry accepted before it is treated as malformed (bytes).
+const MAX_REF_BYTES: u64 = 256;
 /// Timeout for model download (in seconds). Allows ~16MB+ downloads on slow links.
 const MODEL_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
+/// Remediation shown wherever the HF cache directory is the likely cause of a failure.
+const CACHE_OVERRIDE_HINT: &str = "set HF_HOME or HF_HUB_CACHE to a writable directory to override";
+/// Remediation for a lock held by another download: the lock is usually a concurrent lievo run.
+const LOCK_HINT: &str = "another lievo process may be downloading the model; retry, or set HF_HOME/HF_HUB_CACHE to a writable directory";
 
 /// Ensures the potion-code-16M-v2 model artefacts are downloaded (cached under
 /// the HuggingFace hub cache) and returns the directory containing them.
@@ -40,30 +49,89 @@ pub fn ensure_potion_code_model() -> crate::Result<PathBuf> {
     }
 }
 
+/// Returns the env var's value, treating unset and empty as absent.
+fn non_empty_env(var: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(var).filter(|v| !v.is_empty())
+}
+
+/// `HF_HOME/hub` when `HF_HOME` is set and non-empty; `None` otherwise.
+fn hf_home_hub() -> Option<PathBuf> {
+    non_empty_env("HF_HOME").map(|home| PathBuf::from(home).join("hub"))
+}
+
+/// Cache whose `token` entry holds the HF login: `HF_HOME/hub` when `HF_HOME` is set and
+/// non-empty, else the default cache. Never derived from `HF_HUB_CACHE`, and never from an
+/// empty `HF_HOME` (hf-hub would turn that into a relative `./token`).
+fn token_cache() -> Cache {
+    hf_home_hub().map_or_else(Cache::default, Cache::new)
+}
+
+/// Resolves the HuggingFace hub cache directory the model lives in.
+///
+/// hf-hub 0.5.0's `Cache::from_env` only reads `HF_HOME`, so lievo resolves it
+/// itself: `HF_HUB_CACHE` (used as the hub dir directly), then `HF_HOME/hub`,
+/// then hf-hub's default `~/.cache/huggingface/hub`. Empty values are ignored.
+/// Download and lookup both go through this so they always agree.
+pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
+    if let Some(dir) = non_empty_env("HF_HUB_CACHE") {
+        return PathBuf::from(dir);
+    }
+    if let Some(hub) = hf_home_hub() {
+        return hub;
+    }
+    Cache::default().path().clone()
+}
+
+/// Builds a HuggingFace API client rooted at `cache_dir`, honouring `HF_ENDPOINT` the
+/// way `ApiBuilder::from_env` does (a non-empty value replaces the hub URL).
+fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
+    // Token follows HF_HOME (or the default cache), not `cache_dir`, as `from_env` does.
+    let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()))
+        .with_token(token_cache().token());
+    if let Some(endpoint) = non_empty_env("HF_ENDPOINT") {
+        let endpoint = endpoint.into_string().map_err(|_| {
+            crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
+        })?;
+        builder = builder.with_endpoint(endpoint);
+    }
+    builder.build().map_err(|e| {
+        crate::LievoError::RetrievalError(format!(
+            "failed to init HuggingFace API ({})",
+            cache_error_context(cache_dir, &e)
+        ))
+    })
+}
+
+/// Context for a failed HF cache operation. Always names the cache dir; the override
+/// hint is added only for filesystem I/O failures, not for network or HTTP errors.
+fn cache_error_context(cache_dir: &Path, err: &ApiError) -> String {
+    let dir = cache_dir.display();
+    match err {
+        ApiError::IoError(_) => format!("HF cache dir {dir}; {CACHE_OVERRIDE_HINT}"),
+        ApiError::LockAcquisition(_) => format!("HF cache dir {dir}; {LOCK_HINT}"),
+        _ => format!("HF cache dir {dir}"),
+    }
+}
+
 /// Internal function that performs the actual download.
 fn do_download() -> crate::Result<PathBuf> {
-    let api = Api::new().map_err(|e| {
-        crate::LievoError::RetrievalError(format!("failed to init HuggingFace API: {e}"))
-    })?;
+    let cache_dir = resolve_hf_cache_dir();
+    let api = api_for_cache(&cache_dir)?;
 
     let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
+    let fetch = |artifact: &str| {
+        repo.get(artifact).map_err(|e| {
+            crate::LievoError::RetrievalError(format!(
+                "failed to download {MODEL_ID} {artifact}: {e} ({})",
+                cache_error_context(&cache_dir, &e)
+            ))
+        })
+    };
 
     // Download all three artefacts model2vec needs; they share one snapshot dir.
-    let tokenizer = repo.get("tokenizer.json").map_err(|e| {
-        crate::LievoError::RetrievalError(format!(
-            "failed to download {MODEL_ID} tokenizer.json: {e}"
-        ))
-    })?;
-
-    repo.get("model.safetensors").map_err(|e| {
-        crate::LievoError::RetrievalError(format!(
-            "failed to download {MODEL_ID} model.safetensors: {e}"
-        ))
-    })?;
-
-    repo.get("config.json").map_err(|e| {
-        crate::LievoError::RetrievalError(format!("failed to download {MODEL_ID} config.json: {e}"))
-    })?;
+    let tokenizer = fetch("tokenizer.json")?;
+    fetch("model.safetensors")?;
+    fetch("config.json")?;
 
     let dir = tokenizer.parent().ok_or_else(|| {
         crate::LievoError::RetrievalError("model snapshot path has no parent directory".into())
@@ -72,22 +140,69 @@ fn do_download() -> crate::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// Directory containing the downloaded model snapshot (the parent of the
-/// tokenizer artefact in the HuggingFace hub cache), without checking that it
-/// exists and WITHOUT downloading — used by `lievo doctor` for a read-only
-/// "model present on disk" check. `None` when the model has not been
-/// downloaded yet.
-pub fn model_dir() -> Option<PathBuf> {
-    let tokenizer = repo_get(MODEL_ID, "tokenizer.json")?;
-    let dir = tokenizer.parent()?;
-    Some(dir.to_path_buf())
+/// Directory containing the downloaded model snapshot, read from the on-disk hub
+/// layout (`refs/<revision>` → `snapshots/<commit>/tokenizer.json`). Never downloads
+/// and never touches the network, so `lievo doctor` can call it safely.
+///
+/// `Ok(None)` means the model is not cached (missing or empty ref).
+/// `Err` also covers a non-empty ref that is not a plain commit id, since that is a
+/// malformed cache rather than an absent model.
+/// `Err` means the cache exists but cannot be read, which must not be reported as
+/// "not downloaded". hf-hub's `CacheRepo::get` collapses every I/O error to `None`,
+/// so this reads the files directly.
+pub fn model_dir() -> crate::Result<Option<PathBuf>> {
+    let cache_dir = resolve_hf_cache_dir();
+    let repo = Repo::new(MODEL_ID.to_string(), RepoType::Model);
+    let repo_dir = cache_dir.join(repo.folder_name());
+    let read_err = |path: &Path, e: std::io::Error| {
+        crate::LievoError::RetrievalError(format!(
+            "cannot read HF model cache at {}: {e}",
+            path.display()
+        ))
+    };
+
+    let ref_path = repo_dir.join("refs").join(repo.revision());
+    let invalid_ref = || {
+        crate::LievoError::RetrievalError(format!(
+            "invalid ref in HF cache at {}",
+            ref_path.display()
+        ))
+    };
+    // A real ref is a single commit id; a longer value is malformed, so it is
+    // rejected from its metadata length without being read.
+    let ref_meta = match std::fs::metadata(&ref_path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(read_err(&ref_path, e)),
+    };
+    if ref_meta.len() > MAX_REF_BYTES {
+        return Err(invalid_ref());
+    }
+    let commit = match std::fs::read_to_string(&ref_path) {
+        Ok(commit) => commit.trim().to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(read_err(&ref_path, e)),
+    };
+    if commit.is_empty() {
+        return Ok(None);
+    }
+    // The ref is joined into a path, so only a plain hex commit id may be used.
+    if !is_plain_commit_id(&commit) {
+        return Err(invalid_ref());
+    }
+
+    let snapshot = repo_dir.join("snapshots").join(commit);
+    let tokenizer = snapshot.join("tokenizer.json");
+    match std::fs::metadata(&tokenizer) {
+        Ok(_) => Ok(Some(snapshot)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(read_err(&tokenizer, e)),
+    }
 }
 
-/// Non-downloading lookup of a model artefact in the HF hub cache.
-fn repo_get(id: &str, artifact: &str) -> Option<PathBuf> {
-    let api = Api::new().ok()?;
-    let repo = api.repo(Repo::new(id.to_string(), RepoType::Model));
-    repo.get(artifact).ok().map(|f| f.to_path_buf())
+/// A non-empty ASCII hex string: no separators or dots, so it cannot escape `snapshots/`.
+fn is_plain_commit_id(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Index-staleness detection for the on-disk vector index.
@@ -120,101 +235,9 @@ pub fn index_staleness_marker_matches(index_path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "model_cache_staleness_tests.rs"]
+mod staleness_tests;
 
-    #[test]
-    fn test_ensure_potion_code_model_network() {
-        // This test requires network access to download the model (potion-code-16M-v2,
-        // ~16MB from HuggingFace, cached after first run) so it is not run in CI;
-        // it runs locally as an ordinary, un-ignored test when the full
-        // suite is executed: cargo test test_ensure_potion_code_model_network
-        match ensure_potion_code_model() {
-            Ok(dir) => {
-                assert!(dir.exists());
-                assert!(dir.join("tokenizer.json").exists());
-                assert!(dir.join("model.safetensors").exists());
-                assert!(dir.join("config.json").exists());
-            }
-            Err(e) => {
-                // Expected if network is unavailable
-                eprintln!("Network test skipped (no network): {}", e);
-            }
-        }
-    }
-
-    // ----------------------------------------------------------------------
-    // Staleness marker tests (issue #716)
-    // ----------------------------------------------------------------------
-
-    fn staleness_temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("lievo-staleness-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn write_marker_meta(index_path: &std::path::Path, model_id: Option<String>) {
-        let meta = crate::retrieval::usearch_searcher::IndexMeta {
-            model_id,
-            vectors: std::collections::HashMap::new(),
-        };
-        let meta_path = index_path.with_extension("usearch.meta.json");
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).expect("write meta");
-    }
-
-    #[test]
-    fn staleness_no_index_artifact_is_not_stale() {
-        // (a) No meta artefact present (no index yet) => not stale.
-        let dir = staleness_temp_dir("none");
-        let index_path = dir.join("vectors.usearch");
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_matching_marker_is_fresh() {
-        // (b) Marker equals current MODEL_ID => fresh (not stale).
-        let dir = staleness_temp_dir("fresh");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, Some(MODEL_ID.to_string()));
-        assert!(index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_mismatched_marker_is_stale() {
-        // (c) Marker differs from current MODEL_ID (old model) => stale.
-        let dir = staleness_temp_dir("stale-mismatch");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, Some("minishlab/potion-code-16M".to_string()));
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_missing_marker_legacy_is_stale() {
-        // (d) Meta exists but has no `model_id` field (pre-swap legacy) => stale.
-        let dir = staleness_temp_dir("stale-legacy");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, None);
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_corrupt_meta_is_stale() {
-        // Defensive: unparseable meta JSON is treated as stale rather than
-        // silently trusted — a rebuild is the safe recovery.
-        let dir = staleness_temp_dir("stale-corrupt");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        let meta_path = index_path.with_extension("usearch.meta.json");
-        std::fs::write(&meta_path, b"not valid json").expect("write meta");
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-}
+#[cfg(test)]
+#[path = "model_cache_tests.rs"]
+mod tests;

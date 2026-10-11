@@ -319,8 +319,17 @@ pub fn doctor(path: Option<&str>, fmt: OutputFormat) -> lievo::Result<i32> {
         .as_ref()
         .and_then(|root| ts_index_dir_for_repo(root).ok())
         .is_some_and(|d| d.join("vectors.usearch").exists());
-    let embedding_model_present =
-        lievo::retrieval::model_cache::model_dir().is_some_and(|d| d.exists());
+    let embedding_model_present = match lievo::retrieval::model_cache::model_dir() {
+        Ok(dir) => dir.is_some(),
+        Err(e) => {
+            problems.push(Problem {
+                what: format!("could not read embedding model cache: {e}"),
+                fix: "check the HF cache at the path above: fix its permissions, or remove the malformed refs file so the model is re-downloaded; set HF_HOME or HF_HUB_CACHE to use another directory",
+                is_failure: false,
+            });
+            false
+        }
+    };
 
     let ok = !problems.iter().any(|p| p.is_failure);
 

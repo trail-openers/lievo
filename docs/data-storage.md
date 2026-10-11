@@ -26,7 +26,11 @@ Tree-sitter and vector search index for entity discovery. Used by `search_entiti
 **Structure:**
 - One subdirectory per analyzed repository under `~/.lievo/indices/`
 - Each repository subdirectory contains the tree-sitter index and usearch vector embeddings
-- Model weights (minishlab/potion-code-16M-v2, ~16MB) are automatically downloaded from Hugging Face on first use and cached locally
+- Model weights (minishlab/potion-code-16M-v2, ~16MB) are automatically downloaded from Hugging Face on first use and cached locally, by default in `~/.cache/huggingface/hub`
+- To use another location (e.g. a read-only default cache), set `HF_HUB_CACHE` to the hub cache directory, or `HF_HOME` to a directory whose `hub/` subdirectory holds the cache. `HF_HUB_CACHE` takes precedence over `HF_HOME`. The download token is read from `HF_HOME/token` (or `~/.cache/huggingface/token` when `HF_HOME` is unset or empty), so `HF_HUB_CACHE` does not change authentication.
+- `HF_ENDPOINT` is honoured when set (a non-empty value replaces the Hugging Face URL), as hf-hub does. An empty `HF_ENDPOINT` is treated as unset.
+- The Hugging Face token is sent to whatever `HF_ENDPOINT` points at, so use an `https` endpoint.
+- `HF_HOME` is honoured for downloads, not only for the token. If `HF_HOME` is set, the model is downloaded again into `$HF_HOME/hub` the first time after upgrading, even if a copy already exists in the default cache. Set `HF_HUB_CACHE` to the old location to keep using it.
 
 Created during `lievo refresh`.
 
@@ -65,12 +69,13 @@ Capped at 1MB. Can be ignored in normal use.
 
 ## Disk Layout Summary
 
-All lievo data lives under `~/.lievo/`:
+Lievo's own data lives under `~/.lievo/`, with one exception: the embedding model weights live in the Hugging Face hub cache (see Semantic Search Index).
 
 | Path | Purpose |
 |------|---------|
 | `~/.lievo/lievo.db` | SQLite database (entities, relationships, insights) |
 | `~/.lievo/indices/{repo-hash}/ts-index/` | Semantic search index (per repository) |
+| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights, shared with other Hugging Face tools |
 | `~/.lievo/debug-import-resolution.log` | Debug log (optional) |
 | `<repo>/.lievo/config.yaml` | Per-repository configuration (optional) |
 
