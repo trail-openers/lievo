@@ -30,7 +30,6 @@ fn owner_prefixed_name(identity: &str) -> Option<String> {
 
 /// First free `base`, `base-2`, `base-3`, … (no identity, so no owner names).
 fn first_free_suffix(storage: &dyn Storage, base: &str) -> crate::Result<String> {
-    let base = if base.is_empty() { "repo" } else { base };
     let mut candidate = base.to_string();
     let mut n = 2;
     while storage.get_project(&candidate)?.is_some() {

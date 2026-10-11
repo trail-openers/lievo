@@ -18,10 +18,11 @@ pub(super) fn ensure_no_identity_conflict(
     let Some(identity) = identity else {
         return Ok(());
     };
+    // Keys are stored lowercase; compare case-insensitively against the derived identity.
     let conflicting = repos.iter().any(|r| {
         r.git_url
             .as_deref()
-            .is_some_and(|stored| stored != identity)
+            .is_some_and(|stored| !stored.eq_ignore_ascii_case(identity))
     });
     if conflicting {
         return Err(LievoError::InvalidInput(format!(
@@ -53,10 +54,12 @@ pub(super) fn check_explicit_name(
     };
     let repos = storage.list_repos(&project.id)?;
     ensure_no_identity_conflict(&repos, explicit, Some(identity))?;
-    if let Some(same) = repos
-        .iter()
-        .find(|r| r.git_url.as_deref() == Some(identity))
-    {
+    // Keys are stored lowercase; compare case-insensitively against the derived identity.
+    if let Some(same) = repos.iter().find(|r| {
+        r.git_url
+            .as_deref()
+            .is_some_and(|stored| stored.eq_ignore_ascii_case(identity))
+    }) {
         eprintln!(
             "attached to existing project '{}', which already tracks the same remote at '{}'",
             sanitize(explicit),

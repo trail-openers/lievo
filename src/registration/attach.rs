@@ -6,7 +6,7 @@ use super::lookup::project_holds_live_identity;
 use super::policy::ensure_no_identity_conflict;
 use super::{ResolvedRepo, sanitize};
 use crate::LievoError;
-use crate::model::Repository;
+use crate::model::{Project, Repository};
 use crate::storage::Storage;
 
 /// The checkout being registered.
@@ -64,42 +64,64 @@ where
 /// repo insert fails, the project is deleted best-effort only when it holds no
 /// repo row for another checkout (see `holds_only_this_checkout`), and the
 /// original error is returned. A project that pre-existed is never touched.
+/// The outcome of claiming a project name: either this call inserted the
+/// project, or it pre-existed and the registration may attach to it.
+enum Claim {
+    Created(Project),
+    Existing(Project),
+}
+
+/// Claim `name` for `checkout`. `Ok(None)` means an auto name must be re-picked.
+/// Creation is atomic, so `Created` is reported only to the inserting call.
+/// A lost race is resolved against the current holder: an auto name is reused
+/// only for a live checkout of the same identity, and an explicit name gets the
+/// identity-conflict test re-run against the holder's repos.
+fn claim_project(
+    storage: &dyn Storage,
+    name: &str,
+    checkout: &Checkout,
+    source: NameSource,
+) -> crate::Result<Option<Claim>> {
+    if let Some(project) = storage.create_project_if_absent(name, None)? {
+        return Ok(Some(Claim::Created(project)));
+    }
+    let Some(project) = storage.get_project(name)? else {
+        // The project was deleted between the failed insert and this lookup.
+        // An auto name re-picks; an explicit name cannot.
+        return match source {
+            NameSource::Auto => Ok(None),
+            NameSource::Explicit => Err(LievoError::InvalidInput(format!(
+                "project '{}' vanished during registration",
+                sanitize(name)
+            ))),
+        };
+    };
+    match source {
+        NameSource::Auto => {
+            if !project_holds_live_identity(storage, &project.id, checkout.identity)? {
+                return Ok(None);
+            }
+        }
+        // A concurrent registration may have created this project for another
+        // identity after the step-2 check, so the conflict test runs again.
+        NameSource::Explicit => {
+            let repos = storage.list_repos(&project.id)?;
+            ensure_no_identity_conflict(&repos, name, checkout.identity)?;
+        }
+    }
+    Ok(Some(Claim::Existing(project)))
+}
+
 pub(super) fn attach_or_create(
     storage: &dyn Storage,
     name: &str,
     checkout: &Checkout,
     source: NameSource,
 ) -> crate::Result<Option<ResolvedRepo>> {
-    let (project, created) = match storage.create_project_if_absent(name, None)? {
-        Some(project) => (project, true),
-        None => {
-            let Some(project) = storage.get_project(name)? else {
-                // The project was deleted between the failed insert and this
-                // lookup. An auto name re-picks; an explicit name cannot.
-                return match source {
-                    NameSource::Auto => Ok(None),
-                    NameSource::Explicit => Err(LievoError::InvalidInput(format!(
-                        "project '{}' vanished during registration",
-                        sanitize(name)
-                    ))),
-                };
-            };
-            match source {
-                NameSource::Auto => {
-                    if !project_holds_live_identity(storage, &project.id, checkout.identity)? {
-                        return Ok(None);
-                    }
-                }
-                // Re-run the identity-conflict test: a concurrent registration
-                // may have created this project for another identity after the
-                // step-2 check.
-                NameSource::Explicit => {
-                    let repos = storage.list_repos(&project.id)?;
-                    ensure_no_identity_conflict(&repos, name, checkout.identity)?;
-                }
-            }
-            (project, false)
-        }
+    let (project, created) = match claim_project(storage, name, checkout, source)? {
+        None => return Ok(None),
+        Some(Claim::Created(project)) => (project, true),
+        Some(Claim::Existing(project)) => (project, false),
     };
     match add_repo_row(storage, &project.id, checkout) {
         Ok(repo) => Ok(Some(ResolvedRepo { project, repo })),

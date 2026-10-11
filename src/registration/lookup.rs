@@ -44,7 +44,13 @@ pub(super) fn project_holds_live_identity(
     Ok(storage
         .list_repos(project_id)?
         .iter()
-        .any(|r| r.git_url.as_deref() == Some(identity) && path_exists(&r.local_path)))
+        // Keys are stored lowercase; compare case-insensitively against the derived identity.
+        .any(|r| {
+            r.git_url
+                .as_deref()
+                .is_some_and(|stored| stored.eq_ignore_ascii_case(identity))
+                && path_exists(&r.local_path)
+        }))
 }
 
 /// Backfill `git_url` on a path-matched row when it is NULL and a derivable
