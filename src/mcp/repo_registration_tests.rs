@@ -82,6 +82,28 @@ fn path_mismatch_registers_new_repo_instead_of_rewriting_stored_path() {
     assert_eq!(old_repos[0].local_path, old_root.to_str().unwrap());
 }
 
+/// Issue #29: a directory name is stored raw. Sanitizing is a print-boundary
+/// concern only, so a 250-char name must round-trip unchanged into both the
+/// repo row and the project name.
+#[test]
+fn long_dir_name_is_stored_raw_not_display_sanitized() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let long_name = "d".repeat(250);
+    let d = git_tempdir_identity(&long_name, "git@github.com:acme/long");
+    let root = d.path().join(&long_name);
+
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+
+    assert_eq!(
+        resolved.repo.name, long_name,
+        "repo name must be stored raw"
+    );
+    assert_eq!(
+        resolved.project.name, long_name,
+        "project name must match the directory"
+    );
+}
+
 /// Issue #29: two folders with the same identity, both live paths — the
 /// second registration becomes a distinct project named <repo>@<dir> with
 /// its own index, never a move (the "override" case).
@@ -225,7 +247,6 @@ fn changed_origin_on_live_repo_does_not_rekey() {
         .unwrap();
 
     // Change the on-disk origin remote to a different identity.
-    d.path().join("rekey").canonicalize().unwrap();
     let repo = git2::Repository::open(root.as_path()).unwrap();
     repo.config()
         .unwrap()

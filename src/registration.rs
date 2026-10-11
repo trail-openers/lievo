@@ -5,6 +5,10 @@
 //! in a neutral location shared by both. `crate::mcp::repo_resolution`
 //! delegates here and re-exports `find_repo_by_path` for compatibility.
 //!
+//! Submodules: `lookup` (path match, liveness, identity backfill), `naming`
+//! (project-name selection), `attach` (create-or-attach a project and add the
+//! repo row, with orphan cleanup).
+//!
 //! `register` owns the explicit-project-name conflict rule: an explicit name
 //! that exists and holds a repo whose stored non-NULL `git_url` differs from
 //! this request's derived identity is `InvalidInput` ("taken by a different
@@ -12,19 +16,27 @@
 
 use std::path::Path;
 
+mod attach;
+mod lookup;
 mod naming;
 
 use crate::LievoError;
+use crate::config::RepoConfig;
 use crate::identity::derive_identity;
-use crate::model::Repository;
 use crate::storage::Storage;
-use naming::owner_prefixed_name;
+use attach::attach_or_create;
+use lookup::{backfill_git_url, path_exists};
+use naming::{
+    pick_available_project_name, pick_fresh_project_name, repo_dir_name, repo_short_name,
+};
+
+pub use lookup::find_repo_by_path;
 
 /// A project and its repository (issue #29: the shared registration result).
 #[derive(Debug, Clone)]
 pub struct ResolvedRepo {
     pub project: crate::model::Project,
-    pub repo: Repository,
+    pub repo: crate::model::Repository,
 }
 
 /// A request to register a repository, shared by both MCP
@@ -43,40 +55,35 @@ pub struct RegistrationRequest<'a> {
 }
 
 /// Shared registration entry point (issue #29). Both the MCP
-/// `resolve_or_register` routine and the CLI `add-repo` handler call this;
-/// the two paths previously diverged (MCP: path-only + blind suffixing;
-/// CLI: get-or-create-by-name). This function unifies them.
+/// `resolve_or_register` routine and the CLI `add-repo` handler call this.
 ///
-/// Lookup order (issue #29 acceptance criteria):
-/// 1. **Path match** — a repo already registered at this path (via
-///    `find_repo_by_path`'s canonicalisation, defined in this module).
-///    If that row's `git_url` is `NULL`, backfill it from the derived
-///    identity (when derivable); a derived key that already belongs to
-///    another repo logs the overlap and path match wins (no merge, no move).
-///    A changed on-disk origin on a path-matched row does NOT re-key: the
-///    stored `git_url` is authoritative.
-/// 2. **Identity match among vanished paths** — a stored repo row with the
-///    same identity whose `local_path` no longer exists. Hands off to move
-///    handling (issue #30); until that lands, register fresh (this branch
-///    only runs for repos whose identity is not derivable — an identity-
-///    derivable vanished path is caught by step 3 first).
-/// 3. **Identity match among live paths** — a live checkout of the same
-///    identity is already registered. Registers a distinct project named
-///    `<repo>@<dir>` (the new checkout is never attached to the first one's
-///    project by name or identity), with a deterministic suffix if that name
-///    is already taken, never a move.
-/// 4. **Fresh registration** — no path, no identity match: a new project
-///    named `<dir>` if free, `<owner>/<repo>` if `<dir>` is taken by a
-///    different identity, and — for repos with no derivable identity — the
-///    existing `name-2`, `name-3`, … suffix (issue #29's resolved open
-///    question).
+/// Lookup order:
+/// 1. **Path match** — a repo already stored at this path, in either its raw
+///    or canonical form, across all projects (`find_repo_by_path`). Its
+///    project is returned. A NULL stored `git_url` is backfilled from the
+///    derived identity unless that key already belongs to another repo (the
+///    overlap is logged; path match wins, no merge, no move). A changed
+///    on-disk origin never re-keys: a non-NULL stored `git_url` is
+///    authoritative.
+/// 2. **Live same-identity twin** — another stored repo with the same
+///    identity whose `local_path` still exists. The new checkout is registered
+///    as a distinct project named `<repo>@<dir>` (deterministic suffix if that
+///    name is taken). It is never moved and never attached to the twin's
+///    project. Skipped when an explicit project name is given.
+/// 3. **Fresh registration** — everything else. The project is named `<dir>`
+///    if free; `<owner>/<repo>` if `<dir>` is taken by a different identity;
+///    and, for repos with no derivable identity, `name-2`, `name-3`, …. A
+///    same-identity repo whose stored path has vanished falls through to here
+///    until issue #30 adds move handling.
 ///
-/// Explicit-name conflict (owned here, issue #29): the check fires only
-/// when BOTH the request has a derivable identity AND the named project
-/// holds a repo whose stored `git_url` is non-NULL and differs from that
-/// identity — then the name is "taken by a different identity"
-/// (`InvalidInput`). A stored NULL `git_url`, or a request with no
-/// derivable identity, never conflicts.
+/// Explicit project name: when `project_name` is given it is trimmed once and
+/// used everywhere. It must not be empty. It is checked against the
+/// explicit-name conflict rule (the check fires only when the request has a
+/// derivable identity AND the named project holds a repo whose stored non-NULL
+/// `git_url` differs from it, which is `InvalidInput` "taken by a different
+/// identity"). A stored NULL `git_url`, or a request with no derivable
+/// identity, never conflicts. If the named project already tracks the same
+/// identity at another path, registration proceeds and a notice is printed.
 ///
 /// Returns the project and the (possibly new, possibly existing) repository
 /// row. An explicit project name is only checked when a new registration is
@@ -93,12 +100,10 @@ pub fn register(
         .to_str()
         .ok_or_else(|| LievoError::InvalidInput("repo root path is not valid UTF-8".to_string()))?;
 
-    // An explicit project name that is empty or whitespace-only is not a
-    // project name: reject it up front rather than letting it flow through
-    // to `create_project` (issue #29).
-    if let Some(explicit) = request.project_name
-        && explicit.trim().is_empty()
-    {
+    // Trim the explicit name once; every later use sees the trimmed value. An
+    // empty or whitespace-only name is not a project name.
+    let project_name = request.project_name.map(str::trim);
+    if project_name.is_some_and(str::is_empty) {
         return Err(LievoError::InvalidInput(
             "project name must not be empty or whitespace".to_string(),
         ));
@@ -107,7 +112,7 @@ pub fn register(
     // Load the repository's own configuration here (rather than trusting a
     // caller-supplied default) so the `identity:` override in
     // `<repo_root>/.lievo/config.yaml` is honored identically by MCP and CLI.
-    let config = crate::config::RepoConfig::load_or_default(request.repo_root);
+    let config = RepoConfig::load_or_default(request.repo_root);
 
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);
@@ -129,17 +134,14 @@ pub fn register(
         return Ok(ResolvedRepo { project, repo });
     }
 
-    // Explicit-name conflict rule (owned by register, issue #29): an
-    // explicit project name that exists and holds a repo with a stored
-    // non-NULL `git_url` that differs from this request's derived identity
-    // is a hard error. A stored NULL `git_url` is not an identity, so it
-    // cannot conflict. When the request itself has no derivable identity
-    // (`None`), the conflict check is skipped entirely (no re-key).
-    // When the named project already holds a repo with the SAME identity at
-    // a different path, the registration still proceeds (the user
-    // explicitly asked for that name) — but a notice is printed so the
-    // duplicate is visible (issue #29).
-    if let Some(explicit) = request.project_name
+    // Explicit-name conflict rule: an explicit project name that exists and
+    // holds a repo with a stored non-NULL `git_url` that differs from this
+    // request's derived identity is a hard error. When the request has no
+    // derivable identity, the check is skipped entirely (no re-key). When the
+    // named project already holds a repo with the SAME identity at a different
+    // path, registration still proceeds (the user asked for that name) and a
+    // notice makes the duplicate visible.
+    if let Some(explicit) = project_name
         && let Some(identity) = identity_ref
         && let Some(project) = storage.get_project(explicit)?
     {
@@ -169,310 +171,28 @@ pub fn register(
 
     let dir_name = repo_dir_name(request.repo_root);
 
-    // Step 3: identity match among live paths — distinct project named
-    // `<repo>@<dir>` (with a deterministic suffix if taken). Skipped when
-    // the request carries an explicit project name: the explicit-name
-    // conflict/notice above has already been evaluated (or the request has
-    // no identity), so step 3's distinct-project logic does not apply.
+    // Step 2: live same-identity twin. Only a stored path that definitely
+    // vanished (`Ok(false)`) is non-live; see `path_exists`.
     if let Some(identity) = identity_ref
-        && request.project_name.is_none()
+        && project_name.is_none()
     {
         let matches = storage.find_repos_by_git_url(identity)?;
-        let has_live = matches.iter().any(|r| path_exists(&r.local_path));
-        if has_live {
-            let repo_short = repo_short_name(identity);
-            let base = format!("{repo_short}@{dir_name}");
+        if matches.iter().any(|r| path_exists(&r.local_path)) {
+            let base = format!("{}@{dir_name}", repo_short_name(identity));
             let candidate = pick_available_project_name(storage, &base, Some(identity))?;
-            // Explicit resolution: `create_project` is only called for a name
-            // that is free, or one that `pick_available_project_name` already
-            // confirmed carries this same identity (reuse). The get-or-create
-            // fallback inside `create_project` is therefore never relied on.
-            let existing = storage.get_project(&candidate)?;
-            let created = existing.is_none();
-            let project = match existing {
-                None => storage.create_project(&candidate, None)?,
-                Some(existing) => existing,
-            };
-            let repo = match add_repo_row(
+            return attach_or_create(
                 storage,
-                &project.id,
-                &dir_name,
+                &candidate,
                 repo_root_str,
+                &dir_name,
                 Some(identity),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    // Best-effort cleanup: delete the project only if this call
-                    // created it (a reused same-identity project pre-exists and
-                    // is never touched).
-                    if created {
-                        delete_orphan_project(storage, &candidate, &project.id);
-                    }
-                    return Err(e);
-                }
-            };
-            return Ok(ResolvedRepo { project, repo });
+            );
         }
     }
 
-    // Step 4: fresh registration.
-    register_fresh(
-        storage,
-        repo_root_str,
-        request.project_name,
-        &dir_name,
-        identity_ref,
-    )
-}
-
-/// Shared "add repo row, stamp identity, re-read" sequence for the fresh
-/// registration paths (steps 2, 3, and 4). The re-read is necessary because
-/// the row returned by `add_repo` is a hand-built struct that never carries
-/// `git_url`, so we reflect the stamp from storage.
-fn add_repo_row(
-    storage: &dyn Storage,
-    project_id: &str,
-    dir_name: &str,
-    repo_root_str: &str,
-    identity: Option<&str>,
-) -> crate::Result<Repository> {
-    let repo = storage.add_repo(project_id, &sanitize(dir_name), repo_root_str)?;
-    if let Some(key) = identity {
-        storage.set_repo_git_url(&repo.id, key)?;
-    }
-    // Re-read: the row returned by `add_repo` is a hand-built struct that
-    // never carries `git_url`, so reflect the stamp from storage.
-    storage.get_repo(&repo.id)?.ok_or_else(|| {
-        LievoError::InvalidInput(format!("repo row missing after insert: {}", repo.id))
-    })
-}
-
-/// Shared fresh-registration path: create the project, add the repo row, and
-/// (if derivable) stamp the git_url. Used for step 2 (identity match among
-/// vanished paths) and step 4 (no match).
-///
-/// Resolution is explicit (`get_project` first, `create_project` only when the
-/// name is free) so the get-or-create fallback inside `create_project` is
-/// never relied on. If a project is created in this call and the following
-/// `add_repo_row` fails, the just-created project is deleted best-effort so no
-/// orphan project is left behind; the original error is returned.
-fn register_fresh(
-    storage: &dyn Storage,
-    repo_root_str: &str,
-    project_name: Option<&str>,
-    dir_name: &str,
-    identity: Option<&str>,
-) -> crate::Result<ResolvedRepo> {
-    let project_name = pick_fresh_project_name(storage, project_name, dir_name, identity)?;
-    let existing = storage.get_project(&project_name)?;
-    let created = existing.is_none();
-    let project = match existing {
-        // Explicit attach: the name resolved to a pre-existing project.
-        Some(project) => project,
-        None => storage.create_project(&project_name, None)?,
-    };
-    let repo = match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
-        Ok(r) => r,
-        Err(e) => {
-            // Best-effort cleanup: delete the project only if this call
-            // created it (a reused existing project pre-exists and is never
-            // touched).
-            if created {
-                delete_orphan_project(storage, &project_name, &project.id);
-            }
-            return Err(e);
-        }
-    };
-    Ok(ResolvedRepo { project, repo })
-}
-
-/// Backfill `git_url` on a path-matched row when it is NULL and a derivable
-/// identity exists. A changed on-disk origin on a path-matched row does NOT
-/// re-key: stored `git_url` governs identity, so a non-NULL stored value is
-/// left untouched. The identity key is passed in (derived once in
-/// `register`) rather than re-derived. The caller re-reads the row afterwards.
-fn backfill_git_url(
-    storage: &dyn Storage,
-    repo: &Repository,
-    identity: Option<&str>,
-) -> crate::Result<()> {
-    if repo.git_url.is_some() {
-        return Ok(());
-    }
-    let Some(key) = identity else {
-        return Ok(());
-    };
-    let other = find_other_repo_by_git_url(storage, key, &repo.id)?;
-    if let Some(other) = other {
-        // Derived key already belongs to another repo. Log the overlap and
-        // let path match win: no merge, no move, no backfill.
-        eprintln!(
-            "identity overlap for path-matched repo '{}' ({}): derived identity '{}' is already owned by repo '{}' in project '{}'; path match wins, not merging",
-            repo.name,
-            repo.id,
-            sanitize(key),
-            other.id,
-            other.project_id,
-        );
-        return Ok(());
-    }
-    storage.set_repo_git_url(&repo.id, key)?;
-    Ok(())
-}
-
-/// Find a registered repo whose canonical `local_path` matches `path`,
-/// across ALL projects (issue #863 decision 1). Compares both the raw and
-/// the canonicalised form of the stored path against the raw and
-/// canonicalised form of `path`, so a symlinked or otherwise
-/// non-canonical lookup still matches.
-pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Option<Repository>> {
-    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    for project in storage.list_projects()? {
-        for repo in storage.list_repos(&project.id)? {
-            let stored = Path::new(&repo.local_path);
-            let canon = stored.canonicalize().ok();
-            if stored == path
-                || stored == target
-                || canon.as_deref() == Some(path)
-                || canon.as_deref() == Some(target.as_path())
-            {
-                return Ok(Some(repo));
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Find a repo OTHER than `except_id` that owns the given identity key.
-/// Named to not shadow `Storage::find_repos_by_git_url` (the full-vec
-/// cross-project lookup).
-fn find_other_repo_by_git_url(
-    storage: &dyn Storage,
-    key: &str,
-    except_id: &str,
-) -> crate::Result<Option<Repository>> {
-    for r in storage.find_repos_by_git_url(key)? {
-        if r.id != except_id {
-            return Ok(Some(r));
-        }
-    }
-    Ok(None)
-}
-
-/// Resolve the project name for a fresh registration.
-///
-/// Precedence (issue #29 naming rules):
-/// - CLI explicit project name: used as-is; the taken-by-different-identity
-///   collision is caught in `register` before reaching here, so we trust it
-///   here. `create_project` resolves the name to the existing project (no
-///   duplicate row), and a second repo row may attach to it.
-/// - Bare `<dir>` if free.
-/// - `<owner>/<repo>` (with a deterministic suffix if taken) when the short
-///   name is taken by a different identity AND a derivable identity exists.
-/// - `name-2`, `name-3`, … for repos with no derivable identity (resolved
-///   open question in #29: no-identity registrations keep today's suffixing).
-///
-/// Note: this helper only *selects* a candidate name (returning the name that
-/// is either free or same-identity-reusable); `register` and `register_fresh`
-/// perform the explicit `get_project`/`create_project` resolution.
-fn pick_fresh_project_name(
-    storage: &dyn Storage,
-    explicit_name: Option<&str>,
-    dir_name: &str,
-    identity: Option<&str>,
-) -> crate::Result<String> {
-    if let Some(explicit) = explicit_name
-        && !explicit.is_empty()
-    {
-        return Ok(explicit.to_string());
-    }
-    if storage.get_project(dir_name)?.is_none() {
-        return Ok(dir_name.to_string());
-    }
-    if let Some(identity) = identity {
-        let owner_prefixed = owner_prefixed_name(identity, dir_name);
-        return pick_available_project_name(storage, &owner_prefixed, Some(identity));
-    }
-    pick_available_project_name(storage, dir_name, None)
-}
-
-/// Pick a free project name starting from `base`, trying `base-2`,
-/// `base-3`, … if needed. If `identity` is `Some` and a candidate of that
-/// name already exists owned by a repo with the SAME identity, reuse it
-/// (idempotent, issue #29: an already-taken suffix slot carrying the same
-/// identity is attached to rather than re-suffixed); otherwise keep
-/// suffixing.
-fn pick_available_project_name(
-    storage: &dyn Storage,
-    base: &str,
-    identity: Option<&str>,
-) -> crate::Result<String> {
-    let base = if base.is_empty() {
-        "repo".to_string()
-    } else {
-        base.to_string()
-    };
-    let mut candidate = base.clone();
-    let mut suffix = 2;
-    loop {
-        let project = storage.get_project(&candidate)?;
-        match project {
-            None => return Ok(candidate),
-            Some(p) => {
-                let repos = storage.list_repos(&p.id)?;
-                let same_identity = identity
-                    .is_some_and(|id| repos.iter().any(|r| r.git_url.as_deref() == Some(id)));
-                if same_identity {
-                    return Ok(candidate);
-                }
-                candidate = format!("{base}-{suffix}");
-                suffix += 1;
-            }
-        }
-    }
-}
-
-/// The directory name for a repo root (used as the repo row's `name`).
-fn repo_dir_name(repo_root: &Path) -> String {
-    repo_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_string)
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "repo".to_string())
-}
-
-/// The short repo name extracted from an identity key
-/// (`"github.com/owner/repo"` → `"repo"`). Falls back to `dir_name` for
-/// malformed keys.
-fn repo_short_name(identity: &str) -> String {
-    identity
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "repo".to_string())
-}
-
-/// Whether the on-disk path at `local_path` still exists. A path that
-/// canonicalises or that simply exists on the filesystem counts as live;
-/// a vanished path (deleted, moved, unmounted) does not.
-fn path_exists(local_path: &str) -> bool {
-    Path::new(local_path).exists()
-}
-
-/// Best-effort removal of a project this call created but could not populate.
-/// The caller returns its own original error; a failed delete only leaves an
-/// orphan, so it is reported as a one-line sanitized notice instead.
-fn delete_orphan_project(storage: &dyn Storage, name: &str, id: &str) {
-    if let Err(e) = storage.delete_project(id) {
-        eprintln!(
-            "left orphaned project '{}' ({}) after failed registration: cleanup failed: {}",
-            sanitize(name),
-            sanitize(id),
-            sanitize(&e.to_string()),
-        );
-    }
+    // Step 3: fresh registration.
+    let name = pick_fresh_project_name(storage, project_name, &dir_name, identity_ref)?;
+    attach_or_create(storage, &name, repo_root_str, &dir_name, identity_ref)
 }
 
 /// Strip control characters from a value that will be interpolated into a
@@ -481,7 +201,8 @@ fn delete_orphan_project(storage: &dyn Storage, name: &str, id: &str) {
 /// to the terminal raw). Output is also capped at 200 characters so an
 /// oversized value cannot flood a notice. Exported so the CLI handlers (which
 /// interpolate stored project/repo names, paths and identities into their own
-/// notices) sanitize at the same boundary.
+/// notices) sanitize at the same boundary. Stored values are NOT sanitized:
+/// only print boundaries are.
 pub fn sanitize(value: &str) -> String {
     value
         .chars()

@@ -3,6 +3,7 @@
 // Loads optional per-repository configuration that overrides grouping heuristics.
 
 use crate::error::{LievoError, Result};
+use crate::identity::{MAX_KEY_LEN, is_valid_identity_key};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -334,21 +335,20 @@ impl RepoConfig {
         // fields (issue #28, epic #24). Dot/empty segments (`..`, `.`,
         // `a//b`) are path-traversal vectors and are rejected too, as are
         // control characters, which must not reach storage or terminal
-        // output (issue #29). A key longer than 512 bytes is not a real
-        // remote shape and is rejected as well (issue #29).
+        // output, and an over-long key is not a real remote shape (issue #29);
+        // both checks live in `is_valid_identity_key`.
         if let Some(identity) = &self.identity {
             let trimmed = identity.trim();
             if trimmed.is_empty()
                 || trimmed
                     .split('/')
                     .any(|seg| seg.is_empty() || seg == "." || seg == "..")
-                || identity.chars().any(|c| c.is_control())
-                || identity.len() > 512
+                || !is_valid_identity_key(identity)
             {
                 return Err(LievoError::InvalidConfig {
                     path: ".lievo/config.yaml".to_string(),
                     reason: format!(
-                        "identity '{identity}' must not be empty, must be 512 bytes or fewer, and must not contain empty, '.' or '..' path segments or control characters"
+                        "identity '{identity}' must not be empty, must be {MAX_KEY_LEN} bytes or fewer, and must not contain empty, '.' or '..' path segments or control characters"
                     ),
                 });
             }

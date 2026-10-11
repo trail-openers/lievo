@@ -17,7 +17,14 @@ const SUPPORTED_SCHEMES: [&str; 3] = ["https", "ssh", "git"];
 /// Upper bound (in bytes) for an identity key. Keys are `host/owner/repo`
 /// URL shapes; anything longer is not a real remote (or an adversarial
 /// override) and is rejected rather than persisted or printed.
-const MAX_KEY_LEN: usize = 512;
+pub(crate) const MAX_KEY_LEN: usize = 512;
+
+/// Whether `s` is acceptable as an identity key from any source (derived
+/// remote or config override): no control characters and within
+/// `MAX_KEY_LEN` bytes. Shape checks (owner/repo, path segments) are separate.
+pub(crate) fn is_valid_identity_key(s: &str) -> bool {
+    !s.chars().any(|c| c.is_control()) && s.len() <= MAX_KEY_LEN
+}
 
 /// Default ports per scheme where an explicit port is redundant and dropped
 /// from the key. Any other port is preserved as a distinguishing part.
@@ -123,7 +130,7 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
     // a real remote shape — reject it so an adversarial remote URL cannot
     // persist or print an unbounded identity key.
     let key = format!("{key_host}/{repo_path}");
-    if key.len() > MAX_KEY_LEN {
+    if !is_valid_identity_key(&key) {
         return None;
     }
 
@@ -151,12 +158,9 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
         // rejects such values at config load. Control characters are
         // rejected at the same boundary (they must not reach storage or
         // terminal output).
-        if has_forbidden_segment(key)
-            || key.chars().any(|c| c.is_control())
-            || key.len() > MAX_KEY_LEN
-        {
-            // Length bound (issue #29): overrides above `MAX_KEY_LEN` bytes
-            // are rejected, matching `normalize_origin_url`.
+        // Length and control-character bounds (issue #29) are shared with
+        // `normalize_origin_url` and `RepoConfig::validate`.
+        if has_forbidden_segment(key) || !is_valid_identity_key(key) {
             return None;
         }
         return Some(key.to_ascii_lowercase());
