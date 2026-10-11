@@ -77,6 +77,9 @@ pub struct RegistrationRequest<'a> {
 ///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
 ///    The same project and repo row are reused, with no reindex. If the move
 ///    cannot be done safely, the skip is reported and it falls through to step 4.
+///    Exception: when the rollback left index files split (or the row state is
+///    unknown), registration is refused with `LievoError::RepoStateUnknown`, so
+///    nothing indexes the new path over the split files.
 ///    Trust: an `identity:` override in the repo's `.lievo/config.yaml` is
 ///    repo-controlled, so it never drives a move. Only an identity derived from
 ///    the origin remote can take over a vanished project's row, index and
@@ -221,6 +224,15 @@ pub fn register(
                         &renamed,
                     )));
                 }
+                // Split index files: a fresh registration at this path would
+                // share the index directory with them. Refuse, as for unknown state.
+                RelocateOutcome::Skipped(SkipReason::Move { split, .. }) if !split.is_empty() => {
+                    return Err(LievoError::RepoStateUnknown(split_state_notice(
+                        &vanished.local_path,
+                        repo_root_str,
+                        &split,
+                    )));
+                }
                 RelocateOutcome::Skipped(reason) => {
                     report_skipped_move(&vanished.local_path, repo_root_str, &reason);
                 }
@@ -248,11 +260,6 @@ pub fn register(
 /// Print the notice for a relocation that was skipped. The caller then
 /// registers the new path as a fresh project.
 fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
-    if let SkipReason::Move { split, .. } = reason {
-        for r in split {
-            eprintln!("{}", split_notice(old_path, new_path, &r.from, &r.to));
-        }
-    }
     eprintln!(
         "checkout '{}' appears to have moved to '{}', but it could not be re-keyed ({}); registering '{}' as a new project",
         sanitize(old_path),
@@ -289,17 +296,26 @@ fn row_state_unknown_notice(old_path: &str, new_path: &str, renamed: &[Rename]) 
     )
 }
 
-/// The notice for index files that a failed rollback left at `to` instead of
-/// `from`. Nothing moves them back automatically: the row still names
-/// `old_path`, and the new path is registered fresh with the same hash. Move
-/// the files back before indexing `new_path`, which reuses that hash.
-fn split_notice(old_path: &str, new_path: &str, from: &Path, to: &Path) -> String {
+/// The error for a move whose rollback failed, leaving index files at `to`
+/// instead of `from`. Nothing is registered: the row still names `old_path`,
+/// and a fresh registration at `new_path` would share the new index directory
+/// with these files. Recovery is to move the files back by hand.
+fn split_state_notice(old_path: &str, new_path: &str, split: &[Rename]) -> String {
     let old_path = sanitize(old_path);
     let new_path = sanitize(new_path);
-    let from = sanitize(&from.to_string_lossy());
-    let to = sanitize(&to.to_string_lossy());
+    let list = split
+        .iter()
+        .map(|r| {
+            format!(
+                "'{}' (was '{}')",
+                sanitize(&r.to.to_string_lossy()),
+                sanitize(&r.from.to_string_lossy())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "warning: index state for '{old_path}' is split: '{to}' could not be moved back to '{from}'. Rename '{to}' back to '{from}' before indexing '{new_path}'."
+        "checkout '{old_path}' appears to have moved to '{new_path}', but its index files are split and could not be moved back: {list}. Nothing was registered. Recovery: rename each listed file back to its original path, then re-run lievo in '{new_path}'."
     )
 }
 

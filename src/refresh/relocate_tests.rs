@@ -449,18 +449,20 @@ fn split_rollback_leaves_files_at_new_dir_and_register_never_overwrites_them() {
     });
     let new_dir = f.data.join("indices").join(&new_hash);
 
-    let resolved = register(
+    let Err(err) = register(
         &f.storage,
         &RegistrationRequest {
             repo_root: &f.new_root,
             project_name: None,
         },
-    )
-    .unwrap();
-
-    assert_ne!(
-        resolved.project.id, f.project_id,
-        "the split falls back to fresh"
+    ) else {
+        panic!("a split must refuse registration");
+    };
+    assert!(matches!(err, crate::LievoError::RepoStateUnknown(_)));
+    assert_eq!(
+        f.storage.list_projects().unwrap().len(),
+        1,
+        "nothing is registered"
     );
     assert!(
         new_dir.join(INDEX_FILE).exists(),

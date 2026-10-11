@@ -157,18 +157,20 @@ fn third_same_identity_checkout_with_same_dir_name_reuses_repo_at_dir_project() 
 }
 
 #[test]
-fn split_notice_names_both_paths_and_says_to_recover_before_indexing() {
-    let notice = super::split_notice(
-        "/old/checkout",
-        "/new/checkout",
-        std::path::Path::new("/data/indices/aaa"),
-        std::path::Path::new("/data/indices/bbb"),
-    );
-    assert!(notice.contains("'/data/indices/bbb'"), "{notice}");
-    assert!(notice.contains("'/data/indices/aaa'"), "{notice}");
-    assert!(notice.contains("'/old/checkout'"), "{notice}");
+fn split_state_notice_names_both_paths_and_refuses_registration() {
+    let split = vec![crate::refresh::relocate::Rename {
+        from: std::path::PathBuf::from("/data/indices/aaa"),
+        to: std::path::PathBuf::from("/data/indices/bbb"),
+    }];
+    let notice = super::split_state_notice("/old/checkout", "/new/checkout", &split);
     assert!(
-        notice.contains("before indexing '/new/checkout'"),
+        notice.contains("'/data/indices/bbb' (was '/data/indices/aaa')"),
+        "{notice}"
+    );
+    assert!(notice.contains("'/old/checkout'"), "{notice}");
+    assert!(notice.contains("Nothing was registered"), "{notice}");
+    assert!(
+        notice.contains("re-run lievo in '/new/checkout'"),
         "{notice}"
     );
 }

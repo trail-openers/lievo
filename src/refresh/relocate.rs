@@ -17,11 +17,10 @@
 //! fresh. This module prints nothing; the caller decides how to report a skip.
 //!
 //! A rollback that itself fails leaves some files at the new hash while the
-//! row still names the old path. Nothing finishes this automatically: the
-//! fallback fresh registration at the new path then shares the new index
-//! directory with the split files. Recovery is manual (the error or notice
-//! the caller produces says what to do), and the new checkout must not be
-//! indexed until it is done.
+//! row still names the old path. Nothing finishes this automatically, and
+//! `register()` refuses to register fresh at the new path (it returns
+//! `LievoError::RepoStateUnknown`), so nothing indexes over the split files.
+//! Recovery is manual: the error says which files to move back.
 //!
 //! The lock files are never removed. Unlinking one after release lets a
 //! second process lock an orphaned inode while a third creates a new file at
