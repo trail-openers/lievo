@@ -16,7 +16,6 @@ mod grouping_helpers;
 mod grouping_impl;
 pub mod tree_sitter_extractor;
 mod tree_sitter_utils;
-pub use tree_sitter_utils::{
-    hash_canonical_path, lievo_data_dir, repo_hash, ts_index_dir_for_repo,
-};
+pub use crate::layout::repo_hash;
+pub use tree_sitter_utils::{lievo_data_dir, ts_index_dir_for_repo};
 mod ts_metrics;

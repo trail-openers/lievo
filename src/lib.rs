@@ -82,6 +82,7 @@ pub mod storage;
 /// Summarization: on-device code summarization via the apfel backend.
 pub mod summarization;
 pub use api::Lievo;
+pub(crate) mod layout;
 /// Auto-refresh: staleness detection and cheap-layer refresh of analyzed data.
 pub mod refresh;
 pub(crate) mod refresh_resume;

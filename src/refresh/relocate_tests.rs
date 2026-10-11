@@ -1,8 +1,9 @@
 //! Tests for moved-checkout relocation (issue #30).
 
 use super::*;
-use crate::extraction::{lievo_data_dir, repo_hash};
-use crate::refresh::lock::{lock_path_for_hash, status_path_for_hash};
+use crate::extraction::lievo_data_dir;
+use crate::layout::{lock_path_for_hash, repo_hash, status_path_for_hash};
+use crate::refresh::lock::open_lock_file;
 use crate::registration::{RegistrationRequest, register};
 use crate::storage::Storage;
 use crate::storage::sqlite::SqliteStorage;
@@ -69,13 +70,23 @@ fn new_canon(f: &Fixture) -> PathBuf {
 /// Open (creating if needed) a lock file under `data` for a hash.
 fn open_lock(data: &Path, hash: &str) -> File {
     fs::create_dir_all(data).unwrap();
-    File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path_for_hash(data, hash))
-        .unwrap()
+    open_lock_file(&lock_path_for_hash(data, hash)).unwrap()
+}
+
+/// The moved row, panicking with the skip reason otherwise.
+fn moved(outcome: RelocateOutcome) -> Repository {
+    match outcome {
+        RelocateOutcome::Moved(repo) => *repo,
+        RelocateOutcome::Skipped(reason) => panic!("expected a move, skipped: {reason}"),
+    }
+}
+
+/// The skip reason, panicking if the move happened.
+fn skipped(outcome: RelocateOutcome) -> SkipReason {
+    match outcome {
+        RelocateOutcome::Skipped(reason) => reason,
+        RelocateOutcome::Moved(_) => panic!("expected a skip, got a move"),
+    }
 }
 
 #[test]
@@ -84,9 +95,8 @@ fn successful_move_rekeys_row_and_index_without_reindex() {
     let base = base.path().canonicalize().unwrap();
     let f = fixture(&base, base.join("data"), true);
 
-    let moved = relocate_checkout(&f.storage, &f.repo, &f.new_root, &f.data)
-        .unwrap()
-        .expect("the move succeeds");
+    let outcome = relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap();
+    let moved = moved(outcome);
 
     let new_hash = repo_hash(&new_canon(&f)).unwrap();
     let new_dir = f.data.join("indices").join(&new_hash);
@@ -102,7 +112,6 @@ fn successful_move_rekeys_row_and_index_without_reindex() {
     assert!(!f.data.join("indices").join(&f.old_hash).exists());
     assert!(status_path_for_hash(&f.data, &new_hash).exists());
     assert!(!status_path_for_hash(&f.data, &f.old_hash).exists());
-    assert!(!lock_path_for_hash(&f.data, &f.old_hash).exists());
     // No reindex: the analyzed commit and project survive the move.
     assert_eq!(moved.last_analyzed_commit.as_deref(), Some("abc123"));
     assert_eq!(f.storage.list_projects().unwrap().len(), 1);
@@ -119,9 +128,13 @@ fn busy_old_lock_skips_move_and_leaves_row_untouched() {
     let holder = open_lock(&f.data, &f.old_hash);
     holder.try_lock().unwrap();
 
-    let result = relocate_checkout(&f.storage, &f.repo, &f.new_root, &f.data).unwrap();
+    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
 
-    assert!(result.is_none(), "a live indexer blocks the move");
+    assert_eq!(
+        reason,
+        SkipReason::IndexInUse,
+        "a live indexer blocks the move"
+    );
     let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
     assert_eq!(row.local_path, f.old_path);
     assert_eq!(row.index_path, f.repo.index_path);
@@ -152,9 +165,9 @@ fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     fs::create_dir_all(&blocker).unwrap();
     fs::write(blocker.join("keep"), b"x").unwrap();
 
-    let result = relocate_checkout(&f.storage, &f.repo, &f.new_root, &f.data).unwrap();
+    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
 
-    assert!(result.is_none(), "a failed rename falls back");
+    assert!(matches!(reason, SkipReason::Move { ref unrestored, .. } if unrestored.is_empty()));
     assert!(
         f.data
             .join("indices")
@@ -165,11 +178,43 @@ fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     );
     assert!(!f.data.join("indices").join(&new_hash).exists());
     assert!(status_path_for_hash(&f.data, &f.old_hash).exists());
+    assert!(
+        blocker.join("keep").exists(),
+        "the blocker is never overwritten"
+    );
     let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
     assert_eq!(row.local_path, f.old_path);
     assert_eq!(row.index_path, f.repo.index_path);
     // The old lock is released: it can be taken again.
     assert!(open_lock(&f.data, &f.old_hash).try_lock().is_ok());
+}
+
+#[test]
+fn index_path_outside_index_dir_skips_without_moving() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let stray = base.join("elsewhere").join(INDEX_FILE);
+    fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    fs::write(&stray, b"idx").unwrap();
+    f.storage
+        .update_repo_index_path(&f.repo.id, stray.to_str().unwrap())
+        .unwrap();
+    let repo = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+
+    let reason = skipped(relocate_in(&f.storage, &repo, &f.new_root, &f.data).unwrap());
+
+    assert_eq!(reason, SkipReason::IndexOutsideIndexDir);
+    assert!(
+        f.data
+            .join("indices")
+            .join(&f.old_hash)
+            .join(INDEX_FILE)
+            .exists(),
+        "nothing is moved"
+    );
+    let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+    assert_eq!(row.local_path, f.old_path);
 }
 
 #[test]
@@ -205,6 +250,45 @@ fn register_reuses_vanished_row_for_same_identity_at_new_path() {
 }
 
 #[test]
+fn identity_override_never_drives_a_move() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let _env = EnvGuard::new(&base.join("db.sqlite"));
+    let data = lievo_data_dir().unwrap();
+    let f = fixture(&base, data, true);
+    // The identity comes only from a repo-controlled override, not an origin.
+    fs::create_dir_all(f.new_root.join(".lievo")).unwrap();
+    fs::write(
+        f.new_root.join(".lievo").join("config.yaml"),
+        format!("identity: {GIT_URL}\n"),
+    )
+    .unwrap();
+
+    let resolved = register(
+        &f.storage,
+        &RegistrationRequest {
+            repo_root: &f.new_root,
+            project_name: None,
+        },
+    )
+    .unwrap();
+
+    assert_ne!(
+        resolved.project.id, f.project_id,
+        "an override claiming a vanished identity registers fresh"
+    );
+    let old = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+    assert_eq!(old.local_path, f.old_path, "the vanished row is untouched");
+    assert!(
+        f.data
+            .join("indices")
+            .join(&f.old_hash)
+            .join(INDEX_FILE)
+            .exists()
+    );
+}
+
+#[test]
 fn unusable_data_dir_falls_back_without_error_and_keeps_row() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
@@ -213,9 +297,12 @@ fn unusable_data_dir_falls_back_without_error_and_keeps_row() {
     let bad_data = base.join("not-a-dir");
     fs::write(&bad_data, b"x").unwrap();
 
-    let result = relocate_checkout(&f.storage, &f.repo, &f.new_root, &bad_data).unwrap();
+    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &bad_data).unwrap());
 
-    assert!(result.is_none(), "a filesystem error falls back, not Err");
+    assert!(
+        matches!(reason, SkipReason::DataDir(_)),
+        "a filesystem error falls back, not Err"
+    );
     let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
     assert_eq!(row.local_path, f.old_path);
     assert!(

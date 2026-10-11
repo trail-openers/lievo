@@ -17,6 +17,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::layout::{lock_path_for_hash, status_path_for_hash};
+
 /// The trigger recorded in the status file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexTrigger {
@@ -74,12 +76,6 @@ pub(crate) fn lock_path_in_dir(repo_path: &Path, dir: &Path) -> Result<PathBuf, 
     Ok(lock_path_for_hash(dir, &repo_hash(repo_path)?))
 }
 
-/// Lock file path for a precomputed repo hash (relocation re-keys by hash, since
-/// a vanished checkout cannot be canonicalised).
-pub(crate) fn lock_path_for_hash(dir: &Path, hash: &str) -> PathBuf {
-    dir.join(format!("lock-{hash}.lock"))
-}
-
 /// Per-repo status file path (beside the lock).
 pub fn status_path(repo_path: &Path) -> Result<PathBuf, std::io::Error> {
     status_path_in_dir(repo_path, &data_dir()?)
@@ -90,16 +86,36 @@ pub(crate) fn status_path_in_dir(repo_path: &Path, dir: &Path) -> Result<PathBuf
     Ok(status_path_for_hash(dir, &repo_hash(repo_path)?))
 }
 
-/// Status file path for a precomputed repo hash (see `lock_path_for_hash`).
-pub(crate) fn status_path_for_hash(dir: &Path, hash: &str) -> PathBuf {
-    dir.join(format!("status-{hash}.json"))
-}
-
 /// Hash-suffix key shared by the lock and status file names. `repo_hash`
 /// canonicalises the repo path, so the hash is stable across invocations
 /// and across any number of `lievo mcp` processes on the same repo.
 fn repo_hash(repo_path: &Path) -> std::io::Result<String> {
-    crate::extraction::repo_hash(repo_path).map_err(std::io::Error::other)
+    crate::layout::repo_hash(repo_path).map_err(std::io::Error::other)
+}
+
+/// Open (creating if needed, never truncating) a lock file. The one place the
+/// lock file's open options are defined.
+pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Try to take the index lock for a precomputed repo hash without blocking.
+///
+/// `Ok(Some(file))` holds the lock until `file` is dropped. `Ok(None)` means a
+/// live process holds it. A real I/O error is `Err`, never mistaken for
+/// contention.
+pub(crate) fn try_acquire_hash(dir: &Path, hash: &str) -> std::io::Result<Option<fs::File>> {
+    let file = open_lock_file(&lock_path_for_hash(dir, hash))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
 }
 
 fn data_dir() -> Result<PathBuf, std::io::Error> {
@@ -130,12 +146,7 @@ fn acquire_in_dir(
 ) -> Result<std::fs::File, std::io::Error> {
     fs::create_dir_all(dir)?;
     let path = lock_path_in_dir(repo_path, dir)?;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)?;
+    let file = open_lock_file(&path)?;
     // Advisory lock: fails while a LIVE process holds it (TryLockError).
     // A dead holder's lock is released by the OS, so a failed acquire here
     // means a live holder — this is the only "in progress" source.

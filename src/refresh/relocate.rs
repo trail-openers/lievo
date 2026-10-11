@@ -7,19 +7,90 @@
 //!
 //! Ordering: take the old lock, re-read the row under it, rename the
 //! filesystem state, and only then update the row. A failure at any step rolls
-//! back completed renames, leaves the row untouched and returns `None`, so the
-//! caller registers fresh.
+//! back completed renames, leaves the row untouched and returns a
+//! [`SkipReason`], so the caller registers fresh. This module prints nothing;
+//! the caller decides how to report a skip.
+//!
+//! The old lock file is never removed. Unlinking it after release lets a
+//! second process lock an orphaned inode while a third creates a new file at
+//! the same path, so two writers could run at once. A leftover empty lock
+//! file is harmless.
 
+use std::fmt;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::lock::{lock_path_for_hash, status_path_for_hash};
-use crate::LievoError;
-use crate::extraction::hash_canonical_path;
+use super::lock::try_acquire_hash;
+use crate::extraction::lievo_data_dir;
+use crate::layout::{hash_canonical_path, index_dir_for_hash, status_path_for_hash};
 use crate::model::Repository;
-use crate::registration::sanitize;
 use crate::storage::Storage;
+
+/// Why relocation was not done. Unless stated otherwise, the row and files are
+/// left as they were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The lievo data dir is unknown or could not be created.
+    DataDir(String),
+    /// The stored path is not absolute, so its hash cannot be trusted.
+    StoredPathNotAbsolute,
+    /// The new checkout path could not be canonicalised.
+    NewPathUnresolvable(String),
+    /// The new checkout path is not valid UTF-8.
+    NewPathNotUtf8,
+    /// The old lock could not be opened or taken, for a reason other than contention.
+    LockFailed(String),
+    /// A live process holds the old index lock.
+    IndexInUse,
+    /// The row changed while relocation was starting.
+    RowChanged,
+    /// The stored index path is not under the old index directory.
+    IndexOutsideIndexDir,
+    /// The moved index path is not valid UTF-8.
+    IndexPathNotUtf8,
+    /// A rename or the row update failed. `unrestored` lists renames that
+    /// could not be undone, so those files are left at the new location.
+    Move {
+        cause: String,
+        unrestored: Vec<String>,
+    },
+}
+
+impl fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DataDir(e) => write!(f, "the lievo data directory is unavailable: {e}"),
+            Self::StoredPathNotAbsolute => f.write_str("its stored path is not absolute"),
+            Self::NewPathUnresolvable(e) => write!(f, "its new path could not be resolved: {e}"),
+            Self::NewPathNotUtf8 => f.write_str("its new path is not valid UTF-8"),
+            Self::LockFailed(e) => write!(f, "its lock could not be taken: {e}"),
+            Self::IndexInUse => f.write_str("its index is in use by another process"),
+            Self::RowChanged => f.write_str("its row changed while relocation was starting"),
+            Self::IndexOutsideIndexDir => {
+                f.write_str("its stored index path is outside its index directory")
+            }
+            Self::IndexPathNotUtf8 => f.write_str("its moved index path is not valid UTF-8"),
+            Self::Move { cause, unrestored } if unrestored.is_empty() => {
+                write!(f, "the move failed: {cause}")
+            }
+            Self::Move { cause, unrestored } => write!(
+                f,
+                "the move failed: {cause}; could not restore, files left at the new location: {}",
+                unrestored.join(", ")
+            ),
+        }
+    }
+}
+
+/// The result of [`relocate_checkout`].
+#[derive(Debug)]
+pub enum RelocateOutcome {
+    /// The row now points at the new path. Carries the updated row.
+    Moved(Box<Repository>),
+    /// Relocation was not done; the caller registers fresh.
+    Skipped(SkipReason),
+}
 
 /// A completed rename, kept so it can be undone if a later step fails.
 struct Rename {
@@ -27,183 +98,185 @@ struct Rename {
     to: PathBuf,
 }
 
-/// Rename `from` to `to` when `from` exists. A missing source is not an error:
-/// a repo that was never indexed has no index directory or status file.
-fn move_if_present(done: &mut Vec<Rename>, from: PathBuf, to: PathBuf) -> io::Result<()> {
-    match fs::rename(&from, &to) {
-        Ok(()) => {
-            done.push(Rename { from, to });
-            Ok(())
+/// The hashes and paths a relocation derives from the old and new checkouts.
+struct Plan {
+    new_path: String,
+    old_hash: String,
+    new_hash: String,
+    old_dir: PathBuf,
+    new_dir: PathBuf,
+}
+
+impl Plan {
+    fn new(repo: &Repository, new_root: &Path, data_dir: &Path) -> Result<Plan, SkipReason> {
+        if !Path::new(&repo.local_path).is_absolute() {
+            return Err(SkipReason::StoredPathNotAbsolute);
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        let canon = new_root
+            .canonicalize()
+            .map_err(|e| SkipReason::NewPathUnresolvable(e.to_string()))?;
+        let new_path = canon
+            .to_str()
+            .ok_or(SkipReason::NewPathNotUtf8)?
+            .to_string();
+        fs::create_dir_all(data_dir).map_err(|e| SkipReason::DataDir(e.to_string()))?;
+        let old_hash = hash_canonical_path(&repo.local_path);
+        let new_hash = hash_canonical_path(&new_path);
+        Ok(Plan {
+            old_dir: index_dir_for_hash(data_dir, &old_hash),
+            new_dir: index_dir_for_hash(data_dir, &new_hash),
+            new_path,
+            old_hash,
+            new_hash,
+        })
+    }
+}
+
+/// Whether `path` exists (without following a symlink).
+fn exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
 }
 
-/// Undo completed renames, newest first. A failed undo is reported on stderr
-/// rather than hidden, since the files are then left at the new location.
-fn roll_back(done: &[Rename]) {
-    for r in done.iter().rev() {
-        if let Err(e) = fs::rename(&r.to, &r.from) {
-            eprintln!(
-                "could not restore '{}' to '{}': {}",
-                sanitize(&r.to.display().to_string()),
-                sanitize(&r.from.display().to_string()),
-                sanitize(&e.to_string()),
-            );
-        }
+/// Rename `from` to `to` when `from` exists. A missing source is not an error:
+/// a repo that was never indexed has no index directory or status file. An
+/// existing destination is an error, never overwritten: it may be stale state
+/// that must not be destroyed silently.
+fn move_if_present(done: &mut Vec<Rename>, from: PathBuf, to: PathBuf) -> io::Result<()> {
+    if !exists(&from)? {
+        return Ok(());
     }
+    if exists(&to)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("destination '{}' already exists", to.display()),
+        ));
+    }
+    fs::rename(&from, &to)?;
+    done.push(Rename { from, to });
+    Ok(())
 }
 
-/// Move the index directory and the status file from `old_hash` to `new_hash`.
-fn move_state(
-    data_dir: &Path,
-    old_hash: &str,
-    new_hash: &str,
-    done: &mut Vec<Rename>,
-) -> io::Result<()> {
-    let indices = data_dir.join("indices");
-    move_if_present(done, indices.join(old_hash), indices.join(new_hash))?;
+/// Undo completed renames, newest first. Returns the undo failures; those
+/// files stay at the new location.
+fn roll_back(done: &[Rename]) -> Vec<String> {
+    done.iter()
+        .rev()
+        .filter_map(|r| {
+            fs::rename(&r.to, &r.from)
+                .err()
+                .map(|e| format!("'{}' ({e})", r.to.display()))
+        })
+        .collect()
+}
+
+/// Move the index directory and the status file from the old hash to the new.
+fn move_state(data_dir: &Path, plan: &Plan, done: &mut Vec<Rename>) -> io::Result<()> {
+    move_if_present(done, plan.old_dir.clone(), plan.new_dir.clone())?;
     move_if_present(
         done,
-        status_path_for_hash(data_dir, old_hash),
-        status_path_for_hash(data_dir, new_hash),
+        status_path_for_hash(data_dir, &plan.old_hash),
+        status_path_for_hash(data_dir, &plan.new_hash),
     )
 }
 
-/// Map an index path under the old index directory to the same relative path
-/// under the new one. A path outside it has no known home, so it yields `None`
-/// and the next refresh rebuilds the index.
-fn rebase_index_path(index_path: &str, old_dir: &Path, new_dir: &Path) -> Option<String> {
-    let rel = Path::new(index_path).strip_prefix(old_dir).ok()?;
-    new_dir.join(rel).to_str().map(str::to_string)
+/// The index path after the move: the same path relative to the new index
+/// directory. A repo with no index keeps NULL. A path outside the old index
+/// directory has no known home, so the move is skipped rather than writing
+/// NULL over it.
+fn rebase_index_path(index_path: Option<&str>, plan: &Plan) -> Result<Option<String>, SkipReason> {
+    let Some(stored) = index_path else {
+        return Ok(None);
+    };
+    let rel = Path::new(stored)
+        .strip_prefix(&plan.old_dir)
+        .map_err(|_| SkipReason::IndexOutsideIndexDir)?;
+    plan.new_dir
+        .join(rel)
+        .to_str()
+        .map(|s| Some(s.to_string()))
+        .ok_or(SkipReason::IndexPathNotUtf8)
 }
 
-/// Notice printed when relocation is abandoned. The caller then registers the
-/// new path as a fresh project.
-pub(crate) fn fall_back(
-    old_path: &str,
-    new_path: &str,
-    reason: &str,
-) -> crate::Result<Option<Repository>> {
-    eprintln!(
-        "checkout '{}' appears to have moved to '{}', but it could not be re-keyed ({}); registering '{}' as a new project",
-        sanitize(old_path),
-        sanitize(new_path),
-        sanitize(reason),
-        sanitize(new_path),
-    );
-    Ok(None)
+/// Take the old path's lock. A busy lock means a live indexer is writing
+/// there; any other failure is reported as itself.
+fn lock_old(data_dir: &Path, old_hash: &str) -> Result<File, SkipReason> {
+    match try_acquire_hash(data_dir, old_hash) {
+        Ok(Some(file)) => Ok(file),
+        Ok(None) => Err(SkipReason::IndexInUse),
+        Err(e) => Err(SkipReason::LockFailed(e.to_string())),
+    }
 }
 
-/// Re-key `repo` (a vanished checkout with a stored identity) to `new_root`.
+/// Re-key `repo` (a vanished checkout with a stored identity) to `new_root`,
+/// using the lievo data dir.
 ///
-/// Returns the updated row on success. Returns `Ok(None)` when relocation is
-/// not possible (old index in use, a filesystem or row update failed, or the
-/// row changed under us), after a notice has been printed. Only a storage
-/// read failure is an error. `data_dir` is the lievo data dir (`~/.lievo`).
+/// Only a storage read failure is an error; every other failure is a
+/// [`RelocateOutcome::Skipped`].
 pub fn relocate_checkout(
     storage: &dyn Storage,
     repo: &Repository,
     new_root: &Path,
-    data_dir: &Path,
-) -> crate::Result<Option<Repository>> {
-    let new_canon = match new_root.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            return fall_back(
-                &repo.local_path,
-                &new_root.display().to_string(),
-                &format!("its new path could not be resolved: {e}"),
-            );
-        }
-    };
-    let Some(new_path) = new_canon.to_str() else {
-        return fall_back(
-            &repo.local_path,
-            &new_canon.display().to_string(),
-            "its new path is not valid UTF-8",
-        );
-    };
-    let old_hash = hash_canonical_path(&repo.local_path);
-    let new_hash = hash_canonical_path(new_path);
+) -> crate::Result<RelocateOutcome> {
+    match lievo_data_dir() {
+        Ok(data_dir) => relocate_in(storage, repo, new_root, &data_dir),
+        Err(e) => Ok(RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string()))),
+    }
+}
 
-    // Step 1: the old path's lock must be free. A busy lock means a live
-    // indexer is writing there, so the move is abandoned.
-    if let Err(e) = fs::create_dir_all(data_dir) {
-        return fall_back(
-            &repo.local_path,
-            new_path,
-            &format!("the lievo data directory could not be created: {e}"),
-        );
-    }
-    let lock_path = lock_path_for_hash(data_dir, &old_hash);
-    let lock = match File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-    {
-        Ok(f) => f,
-        Err(e) => {
-            return fall_back(
-                &repo.local_path,
-                new_path,
-                &format!("its lock could not be opened: {e}"),
-            );
-        }
+/// [`relocate_checkout`] with an explicit data dir.
+fn relocate_in(
+    storage: &dyn Storage,
+    repo: &Repository,
+    new_root: &Path,
+    data_dir: &Path,
+) -> crate::Result<RelocateOutcome> {
+    let plan = match Plan::new(repo, new_root, data_dir) {
+        Ok(plan) => plan,
+        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
     };
-    if lock.try_lock().is_err() {
-        return fall_back(
-            &repo.local_path,
-            new_path,
-            "its index is in use by another process",
-        );
-    }
+    let lock = match lock_old(data_dir, &plan.old_hash) {
+        Ok(lock) => lock,
+        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
+    };
 
     // Re-read the row under the lock. A concurrent registration may have moved
     // it after our snapshot was taken, in which case `repo` is stale.
     let current = match storage.get_repo(&repo.id)? {
-        Some(r) if r.local_path == repo.local_path => r,
-        _ => {
-            return fall_back(
-                &repo.local_path,
-                new_path,
-                "its row changed while relocation was starting",
-            );
-        }
+        Some(row) if row.local_path == repo.local_path => row,
+        _ => return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged)),
+    };
+    let index_path = match rebase_index_path(current.index_path.as_deref(), &plan) {
+        Ok(path) => path,
+        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
     };
 
-    // Step 2: move the filesystem state, recording each rename for rollback.
-    let old_dir = data_dir.join("indices").join(&old_hash);
-    let new_dir = data_dir.join("indices").join(&new_hash);
+    // Move the filesystem state, recording each rename for rollback. The row
+    // is updated only after the files are in place.
     let mut done = Vec::new();
-    let index_path = current
-        .index_path
-        .as_deref()
-        .and_then(|p| rebase_index_path(p, &old_dir, &new_dir));
+    let result = move_state(data_dir, &plan, &mut done)
+        .map_err(|e| e.to_string())
+        .and_then(|()| {
+            storage
+                .update_repo_local_path(&repo.id, &plan.new_path, index_path.as_deref())
+                .map_err(|e| e.to_string())
+        });
 
-    // Step 3: only after the files are in place, update the row in one statement.
-    let result = move_state(data_dir, &old_hash, &new_hash, &mut done)
-        .map_err(LievoError::Io)
-        .and_then(|()| storage.update_repo_local_path(&repo.id, new_path, index_path.as_deref()));
-
-    // Step 4: release and remove the old lock. The new path's lock was never
-    // created here, so it is immediately acquirable.
+    // Release the lock. It stays on disk (see module docs).
     drop(lock);
     match result {
-        Ok(()) => {
-            let _ = fs::remove_file(&lock_path);
-            let moved = storage.get_repo(&repo.id)?.ok_or_else(|| {
-                LievoError::InvalidInput(format!("repo {} missing after move", repo.id))
-            })?;
-            Ok(Some(moved))
-        }
-        Err(e) => {
-            roll_back(&done);
-            fall_back(&repo.local_path, new_path, &e.to_string())
-        }
+        Ok(()) => Ok(RelocateOutcome::Moved(Box::new(Repository {
+            local_path: plan.new_path,
+            index_path,
+            ..current
+        }))),
+        Err(cause) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
+            cause,
+            unrestored: roll_back(&done),
+        })),
     }
 }
 

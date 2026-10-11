@@ -21,9 +21,8 @@ mod tests;
 
 use crate::LievoError;
 use crate::config::RepoConfig;
-use crate::extraction::lievo_data_dir;
 use crate::identity::derive_identity;
-use crate::refresh::relocate::{self, relocate_checkout};
+use crate::refresh::relocate::{RelocateOutcome, SkipReason, relocate_checkout};
 use crate::storage::Storage;
 use attach::{Checkout, NameSource, attach_picked};
 use lookup::{backfill_git_url, path_exists};
@@ -77,9 +76,10 @@ pub struct RegistrationRequest<'a> {
 /// 3b. **Moved checkout** (auto name, no live twin): a same-identity repo whose
 ///    stored path has vanished is re-keyed to this path (`relocate_checkout`).
 ///    The same project and repo row are reused, with no reindex. If the move
-///    cannot be done safely, it falls through to step 4. Trust note: identity
-///    may come from a `.lievo/config.yaml` `identity:` override, so an override
-///    claiming a vanished identity takes over that project's row, index and
+///    cannot be done safely, the skip is reported and it falls through to step 4.
+///    Trust: an `identity:` override in the repo's `.lievo/config.yaml` is
+///    repo-controlled, so it never drives a move. Only an identity derived from
+///    the origin remote can take over a vanished project's row, index and
 ///    entity ids.
 /// 4. **Fresh registration** — the explicit name as given, or for an auto name
 ///    the first free of `<dir>`; then, with an identity, `<owner>/<repo>`,
@@ -129,6 +129,10 @@ pub fn register(
     // Identity is derived once here and threaded through (no second call).
     let identity = derive_identity(request.repo_root, &config);
     let identity_ref: Option<&str> = identity.as_deref();
+    let identity_from_override = config
+        .identity
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
 
     // Step 1: path match. The row is re-read from storage once, after the
     // backfill attempt (written or not), so the result always reflects the
@@ -185,26 +189,28 @@ pub fn register(
         }
         // Step 3b (issue #30): no live twin, so a vanished checkout of this
         // identity may have moved here. Re-key its row instead of registering
-        // a fresh project. A failed move falls through to step 4.
-        if let Some(vanished) = matches.first() {
-            let attempt = match lievo_data_dir() {
-                Ok(data_dir) => relocate_checkout(storage, vanished, request.repo_root, &data_dir)?,
-                Err(e) => relocate::fall_back(
-                    &vanished.local_path,
-                    &request.repo_root.display().to_string(),
-                    &e.to_string(),
-                )?,
-            };
-            if let Some(moved) = attempt {
-                let project = storage
-                    .get_project_by_id(&moved.project_id)?
-                    .ok_or_else(|| {
-                        LievoError::InvalidInput(format!("project missing for repo {}", moved.id))
-                    })?;
-                return Ok(ResolvedRepo {
-                    project,
-                    repo: moved,
-                });
+        // a fresh project. A skipped move falls through to step 4. An override
+        // identity never drives a move (see the trust note above).
+        if !identity_from_override && let Some(vanished) = matches.first() {
+            match relocate_checkout(storage, vanished, request.repo_root)? {
+                RelocateOutcome::Moved(moved) => {
+                    let project =
+                        storage
+                            .get_project_by_id(&moved.project_id)?
+                            .ok_or_else(|| {
+                                LievoError::InvalidInput(format!(
+                                    "project missing for repo {}",
+                                    moved.id
+                                ))
+                            })?;
+                    return Ok(ResolvedRepo {
+                        project,
+                        repo: *moved,
+                    });
+                }
+                RelocateOutcome::Skipped(reason) => {
+                    report_skipped_move(&vanished.local_path, repo_root_str, &reason);
+                }
             }
         }
     }
@@ -224,6 +230,18 @@ pub fn register(
             &checkout,
         ),
     }
+}
+
+/// Print the notice for a relocation that was skipped. The caller then
+/// registers the new path as a fresh project.
+fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
+    eprintln!(
+        "checkout '{}' appears to have moved to '{}', but it could not be re-keyed ({}); registering '{}' as a new project",
+        sanitize(old_path),
+        sanitize(new_path),
+        sanitize(&reason.to_string()),
+        sanitize(new_path),
+    );
 }
 
 /// Strip control characters from a value that will be interpolated into a
