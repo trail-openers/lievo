@@ -157,6 +157,23 @@ fn third_same_identity_checkout_with_same_dir_name_reuses_repo_at_dir_project() 
 }
 
 #[test]
+fn split_notice_names_both_paths_and_says_to_recover_before_indexing() {
+    let notice = super::split_notice(
+        "/old/checkout",
+        "/new/checkout",
+        std::path::Path::new("/data/indices/aaa"),
+        std::path::Path::new("/data/indices/bbb"),
+    );
+    assert!(notice.contains("'/data/indices/bbb'"), "{notice}");
+    assert!(notice.contains("'/data/indices/aaa'"), "{notice}");
+    assert!(notice.contains("'/old/checkout'"), "{notice}");
+    assert!(
+        notice.contains("before indexing '/new/checkout'"),
+        "{notice}"
+    );
+}
+
+#[test]
 fn auto_name_claimed_by_another_identity_before_attach_is_repicked() {
     let s = SqliteStorage::open_in_memory().unwrap();
     let raced = std::cell::Cell::new(false);
