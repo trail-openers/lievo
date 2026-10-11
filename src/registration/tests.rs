@@ -158,13 +158,16 @@ fn third_same_identity_checkout_with_same_dir_name_reuses_repo_at_dir_project() 
 
 #[test]
 fn split_state_notice_names_both_paths_and_refuses_registration() {
-    let split = vec![crate::refresh::relocate::Rename {
-        from: std::path::PathBuf::from("/data/indices/aaa"),
-        to: std::path::PathBuf::from("/data/indices/bbb"),
+    let split = vec![crate::refresh::relocate::FailedUndo {
+        rename: crate::refresh::relocate::Rename {
+            from: std::path::PathBuf::from("/data/indices/aaa"),
+            to: std::path::PathBuf::from("/data/indices/bbb"),
+        },
+        error: "Permission denied".to_string(),
     }];
     let notice = super::split_state_notice("/old/checkout", "/new/checkout", &split);
     assert!(
-        notice.contains("'/data/indices/bbb' (was '/data/indices/aaa')"),
+        notice.contains("'/data/indices/bbb' (was '/data/indices/aaa': Permission denied)"),
         "{notice}"
     );
     assert!(notice.contains("'/old/checkout'"), "{notice}");

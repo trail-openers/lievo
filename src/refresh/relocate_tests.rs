@@ -414,8 +414,12 @@ fn roll_back_reports_only_renames_it_could_not_undo() {
     let split = roll_back(&done);
 
     assert_eq!(split.len(), 1);
-    assert_eq!(split[0].from, stuck_from);
-    assert_eq!(split[0].to, stuck_to);
+    assert_eq!(split[0].rename.from, stuck_from);
+    assert_eq!(split[0].rename.to, stuck_to);
+    assert!(
+        !split[0].error.is_empty(),
+        "the undo's io error is kept for the notice"
+    );
     assert!(undone_from.exists(), "the undoable rename is restored");
     assert!(!undone_to.exists());
 }
@@ -448,15 +452,19 @@ fn split_rollback_leaves_files_at_new_dir_and_register_never_overwrites_them() {
         }));
     });
     let new_dir = f.data.join("indices").join(&new_hash);
+    let request = RegistrationRequest {
+        repo_root: &f.new_root,
+        project_name: None,
+    };
 
-    let Err(err) = register(
-        &f.storage,
-        &RegistrationRequest {
-            repo_root: &f.new_root,
-            project_name: None,
-        },
-    ) else {
+    let Err(err) = register(&f.storage, &request) else {
         panic!("a split must refuse registration");
+    };
+    assert!(matches!(err, crate::LievoError::RepoStateUnknown(_)));
+    // The hook fired once. The second call finds the split state again: the
+    // row still names the old path, so the refusal must stick.
+    let Err(err) = register(&f.storage, &request) else {
+        panic!("the refusal must be sticky while the split state remains");
     };
     assert!(matches!(err, crate::LievoError::RepoStateUnknown(_)));
     assert_eq!(
@@ -679,7 +687,7 @@ fn unusable_data_dir_falls_back_without_error_and_keeps_row() {
 }
 
 #[test]
-fn register_falls_back_to_fresh_when_move_cannot_complete() {
+fn register_refuses_when_move_cannot_complete_and_new_state_exists() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
     let _env = EnvGuard::new(&base.join("db.sqlite"));
@@ -696,20 +704,20 @@ fn register_falls_back_to_fresh_when_move_cannot_complete() {
     fs::create_dir_all(&blocker).unwrap();
     fs::write(blocker.join("keep"), b"x").unwrap();
 
-    let resolved = register(
+    // The move is rolled back cleanly, but the blocker is index state at the
+    // new hash while the row names the old path. A fresh registration would
+    // share it, so it is refused.
+    let Err(err) = register(
         &f.storage,
         &RegistrationRequest {
             repo_root: &f.new_root,
             project_name: None,
         },
-    )
-    .unwrap();
-
-    assert_ne!(
-        resolved.project.id, f.project_id,
-        "a failed move registers fresh"
-    );
-    assert_ne!(resolved.repo.id, f.repo.id);
+    ) else {
+        panic!("leftover state at the new hash must refuse registration");
+    };
+    assert!(matches!(err, crate::LievoError::RepoStateUnknown(_)));
+    assert_eq!(f.storage.list_projects().unwrap().len(), 1);
     let old = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
     assert_eq!(old.local_path, f.old_path, "the vanished row is untouched");
     assert!(

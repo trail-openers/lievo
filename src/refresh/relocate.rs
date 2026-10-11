@@ -11,21 +11,33 @@
 //! judged by re-reading the row: if it already names the new path the move is
 //! committed; rollback happens only when it still names the old path. Other
 //! failures roll back completed renames, leave the row untouched and return a
-//! [`SkipReason`], so the caller registers fresh. If the row cannot be
-//! confirmed as either path, the renames are kept and
-//! [`SkipReason::RowStateUnknown`] is returned: the caller must not register
-//! fresh. This module prints nothing; the caller decides how to report a skip.
+//! [`SkipReason`], so the caller registers fresh. Rollback runs while the locks
+//! are still held, so the files are in their final state before anything else
+//! can touch them. If the row cannot be confirmed as either path, the renames
+//! are kept and [`SkipReason::RowStateUnknown`] is returned: the caller must
+//! not register fresh. This module prints nothing; the caller decides how to
+//! report a skip.
 //!
 //! A rollback that itself fails leaves some files at the new hash while the
 //! row still names the old path. Nothing finishes this automatically, and
 //! `register()` refuses to register fresh at the new path (it returns
 //! `LievoError::RepoStateUnknown`), so nothing indexes over the split files.
-//! Recovery is manual: the error says which files to move back.
+//! That refusal is sticky: a later `register()` still sees the leftover state at
+//! the new hash (see [`leftover_index_state`]) and keeps refusing. Recovery is
+//! manual: the error says which files to move back.
 //!
 //! The lock files are never removed. Unlinking one after release lets a
 //! second process lock an orphaned inode while a third creates a new file at
 //! the same path, so two writers could run at once. A leftover empty lock
 //! file is harmless.
+//!
+//! Known limitation (provenance): the origin check looks only at the identity
+//! a row's `git_url` was stored under. The `git_url` is not tagged with where
+//! its key came from. A key derived from a repo-controlled `identity:`
+//! override can therefore be stored on a row by path-match backfill, and a
+//! later checkout whose origin remote matches that key could then move the
+//! row. Recording provenance needs a schema change, which is out of scope. See
+//! `docs/data-storage.md` (Known limitations).
 
 use std::fmt;
 use std::fs::{self, File};
@@ -34,9 +46,16 @@ use std::path::{Component, Path, PathBuf};
 
 use super::lock::try_acquire_hash;
 use crate::identity::{Identity, IdentitySource};
+
+#[path = "relocate/rename.rs"]
+mod rename;
 use crate::layout::{CanonicalPath, hash_canonical_path, index_dir_for_hash, status_path_for_hash};
 use crate::model::{Project, Repository};
 use crate::storage::Storage;
+#[cfg(test)]
+pub(crate) use rename::BETWEEN_RENAMES;
+pub use rename::{FailedUndo, Rename};
+use rename::{between_renames, exists, move_if_present, roll_back};
 
 /// Why relocation was not done. Unless stated otherwise, the row and files are
 /// left as they were.
@@ -64,9 +83,12 @@ pub enum SkipReason {
     IndexOutsideIndexDir,
     /// The repo row or its project could not be read. Nothing was changed.
     StorageRead(String),
-    /// A rename or the row update failed. `split` lists renames that could
-    /// not be undone: those files stay at `to` instead of `from`.
-    Move { cause: String, split: Vec<Rename> },
+    /// A rename or the row update failed. `split` lists the renames that could
+    /// not be undone, each with its error: those files stay at `to`.
+    Move {
+        cause: String,
+        split: Vec<FailedUndo>,
+    },
     /// The row update failed and the row names neither path (or could not be
     /// read), so its state is unknown. `renamed` lists the files left at
     /// their new location; they are not rolled back. The caller must not
@@ -114,13 +136,6 @@ pub enum RelocateOutcome {
     Skipped(SkipReason),
 }
 
-/// A rename, kept so it can be undone if a later step fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rename {
-    pub from: PathBuf,
-    pub to: PathBuf,
-}
-
 /// The hashes and paths a relocation derives from the old and new checkouts.
 struct Plan {
     new_path: String,
@@ -153,61 +168,27 @@ impl Plan {
     }
 }
 
-/// Whether `path` exists (without following a symlink).
-fn exists(path: &Path) -> io::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
-    }
+/// Index state already present at the new checkout's hash: its index
+/// directory and its status file, whichever exist. A failed rollback leaves
+/// such state behind, and a fresh registration at `new_root` would share it.
+/// A path that cannot be hashed has no index state, so the list is empty. An
+/// unreadable path counts as present, because it must not be overwritten
+/// blindly.
+pub fn leftover_index_state(repo: &Repository, new_root: &Path) -> Vec<PathBuf> {
+    let Ok(data_dir) = crate::layout::lievo_data_dir() else {
+        return Vec::new();
+    };
+    let Ok(plan) = Plan::new(repo, new_root, &data_dir) else {
+        return Vec::new();
+    };
+    [
+        plan.new_dir,
+        status_path_for_hash(&data_dir, &plan.new_hash),
+    ]
+    .into_iter()
+    .filter(|path| exists(path).unwrap_or(true))
+    .collect()
 }
-
-/// Rename `from` to `to` when `from` exists. A missing source is not an error:
-/// a repo that was never indexed has no index directory or status file. An
-/// existing destination is an error, never overwritten: it may be stale state
-/// that must not be destroyed silently.
-fn move_if_present(done: &mut Vec<Rename>, from: PathBuf, to: PathBuf) -> io::Result<()> {
-    if !exists(&from)? {
-        return Ok(());
-    }
-    if exists(&to)? {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("destination '{}' already exists", to.display()),
-        ));
-    }
-    fs::rename(&from, &to)?;
-    done.push(Rename { from, to });
-    Ok(())
-}
-
-/// Undo completed renames, newest first. Returns the renames that could not be
-/// undone; each stays at `to`.
-fn roll_back(done: &[Rename]) -> Vec<Rename> {
-    done.iter()
-        .rev()
-        .filter(|r| fs::rename(&r.to, &r.from).is_err())
-        .cloned()
-        .collect()
-}
-
-// Test seam: runs once between the index-directory rename and the status
-// rename, so a test can force a failed rollback. Never set in production.
-#[cfg(test)]
-thread_local! {
-    pub(crate) static BETWEEN_RENAMES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        std::cell::RefCell::new(None);
-}
-
-#[cfg(test)]
-fn between_renames() {
-    if let Some(hook) = BETWEEN_RENAMES.with(|h| h.borrow_mut().take()) {
-        hook();
-    }
-}
-
-#[cfg(not(test))]
-fn between_renames() {}
 
 /// Move the index directory and the status file from the old hash to the new.
 fn move_state(data_dir: &Path, plan: &Plan, done: &mut Vec<Rename>) -> io::Result<()> {
@@ -349,12 +330,101 @@ pub fn relocate_checkout(
     }
 }
 
-/// The project of `row`, read before the commit point.
-fn read_project(storage: &dyn Storage, row: &Repository) -> Result<Project, SkipReason> {
-    match storage.get_project_by_id(&row.project_id) {
-        Ok(Some(project)) => Ok(project),
-        Ok(None) => Err(SkipReason::ProjectMissing),
-        Err(e) => Err(SkipReason::StorageRead(e.to_string())),
+/// The row and its project as read under the locks.
+struct Locked {
+    row: Repository,
+    project: Project,
+    /// Another relocation already moved the row to the new path.
+    moved_by_other: bool,
+}
+
+/// Stage 1, under the locks: re-read the row and its project. A concurrent
+/// relocation may have moved the row after the caller's snapshot was taken:
+/// then the move is already done and there is nothing left to rename.
+fn read_under_locks(
+    storage: &dyn Storage,
+    repo: &Repository,
+    new_path: &str,
+) -> Result<Locked, SkipReason> {
+    let row = match storage.get_repo(&repo.id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return Err(SkipReason::RowChanged),
+        Err(e) => return Err(SkipReason::StorageRead(e.to_string())),
+    };
+    let moved_by_other = row.local_path == new_path;
+    if !moved_by_other && row.local_path != repo.local_path {
+        return Err(SkipReason::RowChanged);
+    }
+    // Check the project before the commit point: once the row is updated, a
+    // missing project could only be reported as a failure of a finished move.
+    let project = match storage.get_project_by_id(&row.project_id) {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(SkipReason::ProjectMissing),
+        Err(e) => return Err(SkipReason::StorageRead(e.to_string())),
+    };
+    Ok(Locked {
+        row,
+        project,
+        moved_by_other,
+    })
+}
+
+/// Stage 2, under the locks: rename the filesystem state, update the row, and
+/// map the outcome. Any rollback happens here, before the caller releases the
+/// locks, so the files are in their final state when the lock is released.
+fn commit_move(
+    storage: &dyn Storage,
+    repo: &Repository,
+    plan: &Plan,
+    data_dir: &Path,
+    locked: Locked,
+) -> RelocateOutcome {
+    let Locked {
+        row,
+        project,
+        moved_by_other,
+    } = locked;
+    if moved_by_other {
+        return RelocateOutcome::Moved {
+            repo: Box::new(row),
+            project: Box::new(project),
+            notice: None,
+        };
+    }
+    let index_path = match rebase_index_path(row.index_path.as_deref(), plan) {
+        Ok(path) => path,
+        Err(reason) => return RelocateOutcome::Skipped(reason),
+    };
+
+    // Move the filesystem state, recording each rename for rollback. The row
+    // is updated only after the files are in place.
+    let mut done = Vec::new();
+    let committed = match move_state(data_dir, plan, &mut done) {
+        // Nothing reached the row, so it still names the old path.
+        Err(e) => Err((e.to_string(), RowAfterError::OldPath)),
+        Ok(()) => storage
+            .update_repo_local_path(&repo.id, &plan.new_path, index_path.as_deref())
+            .map_err(|e| {
+                let state =
+                    row_after_error(storage.get_repo(&repo.id), &repo.local_path, &plan.new_path);
+                (e.to_string(), state)
+            }),
+    };
+    match committed {
+        Ok(()) => {
+            let fallback = Repository {
+                local_path: plan.new_path.clone(),
+                index_path,
+                ..row
+            };
+            let (row, notice) = after_commit(|| storage.get_repo(&repo.id), fallback);
+            RelocateOutcome::Moved {
+                repo: Box::new(row),
+                project: Box::new(project),
+                notice,
+            }
+        }
+        Err((cause, state)) => failed_update_outcome(cause, state, &done, project),
     }
 }
 
@@ -382,69 +452,14 @@ fn relocate_in(
         Err(reason) => return RelocateOutcome::Skipped(reason),
     };
 
-    // Re-read the row under the locks. A concurrent relocation may have moved
-    // it after our snapshot was taken: then the move is already done and there
-    // is nothing left to rename.
-    let current = match storage.get_repo(&repo.id) {
-        Ok(Some(row)) => row,
-        Ok(None) => return RelocateOutcome::Skipped(SkipReason::RowChanged),
-        Err(e) => return RelocateOutcome::Skipped(SkipReason::StorageRead(e.to_string())),
+    // The locks cover the re-read, the renames, the row update and any
+    // rollback. They are released only once the outcome is final.
+    let outcome = match read_under_locks(storage, repo, &plan.new_path) {
+        Ok(locked) => commit_move(storage, repo, &plan, data_dir, locked),
+        Err(reason) => RelocateOutcome::Skipped(reason),
     };
-    let moved_by_other = current.local_path == plan.new_path;
-    if !moved_by_other && current.local_path != repo.local_path {
-        return RelocateOutcome::Skipped(SkipReason::RowChanged);
-    }
-    // Check the project before the commit point: once the row is updated, a
-    // missing project could only be reported as a failure of a finished move.
-    let project = match read_project(storage, &current) {
-        Ok(project) => project,
-        Err(reason) => return RelocateOutcome::Skipped(reason),
-    };
-    if moved_by_other {
-        return RelocateOutcome::Moved {
-            repo: Box::new(current),
-            project: Box::new(project),
-            notice: None,
-        };
-    }
-    let index_path = match rebase_index_path(current.index_path.as_deref(), &plan) {
-        Ok(path) => path,
-        Err(reason) => return RelocateOutcome::Skipped(reason),
-    };
-
-    // Move the filesystem state, recording each rename for rollback. The row
-    // is updated only after the files are in place.
-    let mut done = Vec::new();
-    let committed = match move_state(data_dir, &plan, &mut done) {
-        // Nothing reached the row, so it still names the old path.
-        Err(e) => Err((e.to_string(), RowAfterError::OldPath)),
-        Ok(()) => storage
-            .update_repo_local_path(&repo.id, &plan.new_path, index_path.as_deref())
-            .map_err(|e| {
-                let state =
-                    row_after_error(storage.get_repo(&repo.id), &repo.local_path, &plan.new_path);
-                (e.to_string(), state)
-            }),
-    };
-
-    // Release the locks. They stay on disk (see module docs).
     drop(locks);
-    match committed {
-        Ok(()) => {
-            let fallback = Repository {
-                local_path: plan.new_path,
-                index_path,
-                ..current
-            };
-            let (row, notice) = after_commit(|| storage.get_repo(&repo.id), fallback);
-            RelocateOutcome::Moved {
-                repo: Box::new(row),
-                project: Box::new(project),
-                notice,
-            }
-        }
-        Err((cause, state)) => failed_update_outcome(cause, state, &done, project),
-    }
+    outcome
 }
 
 /// Resolve the row after the commit point. The move is already durable, so a

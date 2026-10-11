@@ -96,3 +96,7 @@ lievo refresh <project>
 - Delete only `lievo.db` to clear all analysis data (entities, relationships, insights)
 - Delete only `~/.lievo/indices/` to clear semantic search (database remains intact)
 - Delete repository-specific `.lievo/` config to reset per-repository settings
+
+## Known limitations
+
+- **Moved-checkout provenance:** a vanished checkout's row is re-keyed to a new path only when the new checkout's origin remote matches the row's stored `git_url`. A `git_url` derived from a repo-controlled `identity:` override can be stored on a row by path-match backfill, and a later origin checkout with that key could then move the row. The `git_url` does not record where its key came from, so this needs a schema change. It is not fixed yet.

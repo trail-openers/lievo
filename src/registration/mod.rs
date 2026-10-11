@@ -22,7 +22,9 @@ mod tests;
 use crate::LievoError;
 use crate::config::RepoConfig;
 use crate::identity::derive_identity;
-use crate::refresh::relocate::{RelocateOutcome, Rename, SkipReason, relocate_checkout};
+use crate::refresh::relocate::{
+    FailedUndo, RelocateOutcome, Rename, SkipReason, leftover_index_state, relocate_checkout,
+};
 use crate::storage::Storage;
 use attach::{Checkout, NameSource, attach_picked};
 use lookup::{backfill_git_url, path_exists};
@@ -237,6 +239,18 @@ pub fn register(
                     report_skipped_move(&vanished.local_path, repo_root_str, &reason);
                 }
             }
+            // Sticky refusal: a skipped move (including one that found the split
+            // state again) must not fall through to a fresh registration while
+            // index state already sits at the new hash. The row still names the
+            // old path here, so that state is a leftover of a failed rollback.
+            let leftovers = leftover_index_state(vanished, request.repo_root);
+            if !leftovers.is_empty() {
+                return Err(LievoError::RepoStateUnknown(leftover_state_notice(
+                    &vanished.local_path,
+                    repo_root_str,
+                    &leftovers,
+                )));
+            }
         }
     }
 
@@ -299,23 +313,46 @@ fn row_state_unknown_notice(old_path: &str, new_path: &str, renamed: &[Rename]) 
 /// The error for a move whose rollback failed, leaving index files at `to`
 /// instead of `from`. Nothing is registered: the row still names `old_path`,
 /// and a fresh registration at `new_path` would share the new index directory
-/// with these files. Recovery is to move the files back by hand.
-fn split_state_notice(old_path: &str, new_path: &str, split: &[Rename]) -> String {
+/// with these files. Each file lists the error that stopped its undo.
+/// Recovery is to move the files back by hand.
+fn split_state_notice(old_path: &str, new_path: &str, split: &[FailedUndo]) -> String {
     let old_path = sanitize(old_path);
     let new_path = sanitize(new_path);
     let list = split
         .iter()
-        .map(|r| {
+        .map(|f| {
             format!(
-                "'{}' (was '{}')",
-                sanitize(&r.to.to_string_lossy()),
-                sanitize(&r.from.to_string_lossy())
+                "'{}' (was '{}': {})",
+                sanitize(&f.rename.to.to_string_lossy()),
+                sanitize(&f.rename.from.to_string_lossy()),
+                sanitize(&f.error)
             )
         })
         .collect::<Vec<_>>()
         .join(", ");
     format!(
         "checkout '{old_path}' appears to have moved to '{new_path}', but its index files are split and could not be moved back: {list}. Nothing was registered. Recovery: rename each listed file back to its original path, then re-run lievo in '{new_path}'."
+    )
+}
+
+/// The error for a registration refused because index state already exists at
+/// the new path while the row still names `old_path`. Nothing is registered.
+/// The listed paths must be moved out of the way before the retry: a retry
+/// then relocates the old state, rather than sharing it.
+fn leftover_state_notice(
+    old_path: &str,
+    new_path: &str,
+    leftovers: &[std::path::PathBuf],
+) -> String {
+    let old_path = sanitize(old_path);
+    let new_path = sanitize(new_path);
+    let list = leftovers
+        .iter()
+        .map(|p| format!("'{}'", sanitize(&p.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "checkout '{old_path}' appears to have moved to '{new_path}', but index state for the new path already exists ({list}) while the row still names '{old_path}'. Nothing was registered. Recovery: check the row for '{old_path}' (`lievo admin list-repos`); move the listed paths out of the way, keeping them for inspection, then re-run lievo in '{new_path}'."
     )
 }
 
