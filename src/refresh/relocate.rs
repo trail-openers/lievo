@@ -22,9 +22,14 @@
 //! row still names the old path. Nothing finishes this automatically, and
 //! `register()` refuses to register fresh at the new path (it returns
 //! `LievoError::RepoStateUnknown`), so nothing indexes over the split files.
-//! That refusal is sticky: a later `register()` still sees the leftover state at
-//! the new hash (see [`leftover_index_state`]) and keeps refusing. Recovery is
-//! manual: the error says which files to move back.
+//! That refusal is sticky for a move that was attempted: a later `register()`
+//! still sees the leftover state at the new hash (see
+//! [`leftover_index_state`]) and keeps refusing. The leftover check runs only
+//! after an attempted move. Other skips (for example `NotOriginIdentity`, which
+//! covers `identity:` overrides) fall through to fresh registration without it,
+//! so a checkout that never moves can still register at a path holding leftover
+//! state from an earlier failed rollback. Recovery is manual: the error says
+//! which files to move back.
 //!
 //! The lock files are never removed. Unlinking one after release lets a
 //! second process lock an orphaned inode while a third creates a new file at
