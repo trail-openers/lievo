@@ -51,15 +51,16 @@ fn has_forbidden_segment(path: &str) -> bool {
 /// is unparseable, uses an unsupported scheme, contains a control character,
 /// or lacks an owner/repo shape.
 pub fn normalize_origin_url(url: &str) -> Option<String> {
-    // Control characters (ANSI escapes, internal newlines, NUL, ...) in a
-    // remote URL must never survive into an identity key: they would render
-    // raw in terminal output or corrupt downstream parsing. Checked before
-    // trimming so a trailing newline cannot mask an embedded control char.
-    if url.chars().any(|c| c.is_control()) {
-        return None;
-    }
     let url = url.trim();
     if url.is_empty() {
+        return None;
+    }
+    // Control characters (ANSI escapes, embedded newlines, NUL, ...) must never
+    // survive into an identity key: they would render raw in terminal output or
+    // corrupt downstream parsing. Checked after trimming, so only a leading or
+    // trailing whitespace run is removed and an embedded control char is still
+    // rejected.
+    if url.chars().any(|c| c.is_control()) {
         return None;
     }
 
@@ -172,9 +173,9 @@ mod tests {
     use tempfile::TempDir;
 
     /// Table-driven cases: every URL form in the issue's edge-case list must
-    /// collapse to the same key `github.com/owner/repo`. Control characters
-    /// (newlines in particular) are rejected before trimming, so URLs with
-    /// a trailing newline must use their clean form here.
+    /// collapse to the same key `github.com/owner/repo`. Leading and trailing
+    /// whitespace (including a newline) is trimmed before the control-character
+    /// check.
     #[test]
     fn test_normalize_origin_url_all_spellings_collapse_to_one_key() {
         let expected = "github.com/owner/repo";
@@ -202,8 +203,9 @@ mod tests {
             "git@GitHub.com:owner/repo",
             // trailing slash variants
             "ssh://git@github.com/owner/repo/",
-            // trailing whitespace is still trimmed (control chars are not)
+            // trailing whitespace and newlines are trimmed
             "https://github.com/owner/repo ",
+            "https://github.com/owner/repo\n",
         ];
 
         for url in &cases {
@@ -314,7 +316,7 @@ mod tests {
         // must never leak into an identity key.
         for url in [
             "git@github.com:owner/repo\u{001b}[31m",
-            "https://github.com/owner/repo\n",
+            "https://github.com/owner/re\npo",
             "https://github.com/owner/\u{0}/repo",
             "ssh://github.com/owner\t/repo",
         ] {

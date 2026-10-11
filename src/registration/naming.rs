@@ -8,7 +8,7 @@
 //! name is `<repo>@<dir>`, then `<repo>@<dir>-2`, `-3`, … (the first name that
 //! is free or already holds this identity).
 
-use super::lookup::project_holds_identity;
+use super::lookup::project_holds_live_identity;
 use crate::storage::Storage;
 use std::path::Path;
 
@@ -62,8 +62,9 @@ pub(super) fn pick_fresh_name(
 }
 
 /// Name for a live same-identity twin (`<repo>@<dir>`). Returns the first of
-/// `base`, `base-2`, `base-3`, … that is free or already held by `identity`,
-/// where the checkout joins it. A name held by any other identity is skipped.
+/// `base`, `base-2`, `base-3`, … that is free or already held by `identity` at
+/// a live checkout, where the checkout joins it. A name held by any other
+/// identity, or by a vanished-only holder of this identity, is skipped.
 pub(super) fn pick_name(
     storage: &dyn Storage,
     base: &str,
@@ -74,7 +75,7 @@ pub(super) fn pick_name(
     loop {
         let usable = match storage.get_project(&candidate)? {
             None => true,
-            Some(project) => project_holds_identity(storage, &project.id, Some(identity))?,
+            Some(project) => project_holds_live_identity(storage, &project.id, Some(identity))?,
         };
         if usable {
             return Ok(candidate);

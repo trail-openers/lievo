@@ -33,6 +33,58 @@ fn claim(storage: &dyn Storage, name: &str, path: &str, identity: &str) {
 fn sanitize_strips_control_and_bidi_format_characters() {
     assert_eq!(super::sanitize("a\u{1b}[2Jb"), "a[2Jb");
     assert_eq!(super::sanitize("x\u{202e}y\u{200b}z"), "xyz");
+    assert_eq!(
+        super::sanitize("a\u{2028}b\u{2029}c\u{feff}d\u{2060}e\u{2064}f"),
+        "abcdef"
+    );
+}
+
+#[test]
+fn live_twin_does_not_reattach_to_vanished_only_holder_of_same_identity() {
+    let s = SqliteStorage::open_in_memory().unwrap();
+    let remote_checkout = |dir: &TempDir| {
+        let root = dir.path().join("twin");
+        let repo = git2::Repository::init(&root).unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("remote.origin.url", "git@github.com:acme/tool")
+            .unwrap();
+        root
+    };
+    let (d1, d2) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let live = remote_checkout(&d1);
+    let newcomer = remote_checkout(&d2);
+    // A live acme/tool checkout makes the next registration a live twin.
+    let first = register(
+        &s,
+        &RegistrationRequest {
+            repo_root: &live,
+            project_name: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(first.project.name, "twin");
+    // `tool@twin` is held only by a vanished acme/tool checkout.
+    let gone = TempDir::new().unwrap();
+    claim(
+        &s,
+        "tool@twin",
+        gone.path().join("gone").to_str().unwrap(),
+        "github.com/acme/tool",
+    );
+
+    let second = register(
+        &s,
+        &RegistrationRequest {
+            repo_root: &newcomer,
+            project_name: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        second.project.name, "tool@twin-2",
+        "a vanished-only holder of the identity is skipped, not reattached"
+    );
 }
 
 #[test]
@@ -270,28 +322,32 @@ fn explicit_name_claimed_for_another_identity_after_check_is_rejected() {
 }
 
 #[test]
-fn auto_name_repicks_are_bounded_then_fail_without_attaching() {
+fn auto_name_repicks_through_repeated_races_until_one_attaches() {
+    // Several concurrent registrations claim successive picked names for other
+    // identities before this one attaches. An auto name must never fail merely
+    // because names are taken.
     let s = SqliteStorage::open_in_memory().unwrap();
-    claim(&s, "stuck", "/elsewhere", "github.com/other/stuck");
+    let races = std::cell::Cell::new(0usize);
+    let pick = |st: &dyn Storage| {
+        let n = races.get();
+        if n < 5 {
+            races.set(n + 1);
+            let name = format!("stuck-{n}");
+            let path = format!("/elsewhere/{name}");
+            claim(st, &name, &path, &format!("github.com/other/{name}"));
+            return Ok(name);
+        }
+        pick_fresh_name(st, "stuck", Some("github.com/acme/stuck"))
+    };
     let checkout = Checkout {
         root: "/work/stuck",
         dir_name: "stuck",
         identity: Some("github.com/acme/stuck"),
     };
 
-    let err = attach_picked(
-        &s,
-        NameSource::Auto,
-        |_: &dyn Storage| Ok("stuck".to_string()),
-        &checkout,
-    )
-    .unwrap_err();
+    let resolved = attach_picked(&s, NameSource::Auto, pick, &checkout).unwrap();
 
-    assert!(
-        matches!(err, LievoError::InvalidInput(_)),
-        "exhausted re-picks must be InvalidInput, got {err:?}"
-    );
-    assert_eq!(s.list_projects().unwrap().len(), 1, "no project created");
-    let stuck = s.get_project("stuck").unwrap().expect("claimed project");
-    assert_eq!(s.list_repos(&stuck.id).unwrap().len(), 1);
+    assert_eq!(races.get(), 5);
+    assert_eq!(resolved.project.name, "stuck");
+    assert_eq!(s.list_projects().unwrap().len(), 6);
 }

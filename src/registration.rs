@@ -79,10 +79,9 @@ pub struct RegistrationRequest<'a> {
 ///    reattaches to that vanished project.
 ///
 /// Attaching (`attach::attach_picked`): an auto name is reused only when its
-/// project already holds this identity. If a concurrent registration claimed
-/// the picked name for another identity, the name is re-picked, at most three
-/// times, then the call fails with `InvalidInput`. An explicit name is never
-/// re-picked.
+/// project already holds this identity at a live checkout. If a concurrent
+/// registration claimed the picked name for another identity, the name is
+/// re-picked until one attaches. An explicit name is never re-picked.
 ///
 /// The explicit name is trimmed once and must not be empty. A stored NULL
 /// `git_url`, or a request with no derivable identity, never conflicts.
@@ -207,7 +206,13 @@ pub fn sanitize(value: &str) -> String {
             !(c.is_control()
                 || matches!(
                     c,
-                    '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                    '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{2060}'..='\u{2064}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
                 ))
         })
         .take(200)

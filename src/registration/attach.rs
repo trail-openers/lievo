@@ -2,16 +2,12 @@
 //! place that creates projects for a registration, so the orphan-cleanup
 //! logic and the same-identity reuse rule exist exactly once.
 
-use super::lookup::project_holds_identity;
+use super::lookup::project_holds_live_identity;
 use super::policy::ensure_no_identity_conflict;
 use super::{ResolvedRepo, sanitize};
 use crate::LievoError;
 use crate::model::Repository;
 use crate::storage::Storage;
-
-/// Picked names tried before a registration gives up. More than one attempt is
-/// only needed when a concurrent registration claims a picked name first.
-const MAX_PICK_ATTEMPTS: usize = 3;
 
 /// The checkout being registered.
 pub(super) struct Checkout<'a> {
@@ -34,7 +30,9 @@ pub(super) enum NameSource {
 
 /// Picks a project name with `pick`, then attaches the checkout to it. An auto
 /// name that a concurrent registration claimed for a different identity is
-/// re-picked, up to `MAX_PICK_ATTEMPTS` picks in total, then `InvalidInput`.
+/// re-picked until one attaches. Each lost race means another registration
+/// claimed a name, and the project table is finite, so this terminates. An
+/// explicit name never yields `Ok(None)`, so it is attempted once.
 pub(super) fn attach_picked<F>(
     storage: &dyn Storage,
     source: NameSource,
@@ -44,23 +42,20 @@ pub(super) fn attach_picked<F>(
 where
     F: Fn(&dyn Storage) -> crate::Result<String>,
 {
-    for _ in 0..MAX_PICK_ATTEMPTS {
+    loop {
         let name = pick(storage)?;
         if let Some(resolved) = attach_or_create(storage, &name, checkout, source)? {
             return Ok(resolved);
         }
     }
-    Err(LievoError::InvalidInput(
-        "could not pick a free project name: candidates were claimed concurrently; retry the registration"
-            .to_string(),
-    ))
 }
 
 /// Attach `checkout` to the project named `name`, creating it when the name is
 /// free.
 ///
 /// The reuse rule: an existing project is attached to only for an explicit
-/// name, or for an auto name whose project already holds this identity. An
+/// name, or for an auto name whose project already holds this identity at a
+/// live checkout. A vanished-only holder is never reattached. An
 /// auto name now held by any other project returns `Ok(None)` so the caller
 /// re-picks.
 ///
@@ -86,7 +81,7 @@ pub(super) fn attach_or_create(
             })?;
             match source {
                 NameSource::Auto => {
-                    if !project_holds_identity(storage, &project.id, checkout.identity)? {
+                    if !project_holds_live_identity(storage, &project.id, checkout.identity)? {
                         return Ok(None);
                     }
                 }

@@ -31,8 +31,9 @@ pub fn find_repo_by_path(storage: &dyn Storage, path: &Path) -> crate::Result<Op
 }
 
 /// Whether the project `project_id` holds a repo whose stored `git_url` is
-/// `identity`. Always false for a `None` identity.
-pub(super) fn project_holds_identity(
+/// `identity` AND whose checkout still exists. A vanished-only holder does not
+/// count, so it is never reattached. Always false for a `None` identity.
+pub(super) fn project_holds_live_identity(
     storage: &dyn Storage,
     project_id: &str,
     identity: Option<&str>,
@@ -43,7 +44,7 @@ pub(super) fn project_holds_identity(
     Ok(storage
         .list_repos(project_id)?
         .iter()
-        .any(|r| r.git_url.as_deref() == Some(identity)))
+        .any(|r| r.git_url.as_deref() == Some(identity) && path_exists(&r.local_path)))
 }
 
 /// Backfill `git_url` on a path-matched row when it is NULL and a derivable
