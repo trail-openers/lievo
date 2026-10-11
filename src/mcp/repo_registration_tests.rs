@@ -297,7 +297,7 @@ fn naming_bare_when_free_owner_prefixed_when_taken_by_different_identity() {
 /// same-identity re-registration hits step 3 and gets the <repo>@<dir>
 /// name.
 #[test]
-fn identity_bearing_twin_reuses_owner_prefixed_project() {
+fn identity_bearing_twin_never_reuses_a_different_identity_project() {
     let storage = SqliteStorage::open_in_memory().unwrap();
     // A different-identity repo occupies the "twin" dir name.
     let d0 = git_tempdir_identity("twin", "git@github.com:other/twin");

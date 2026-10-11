@@ -12,10 +12,12 @@ use crate::storage::Storage;
 /// (free, or a name the caller has confirmed may be reused).
 ///
 /// Resolution is explicit (`get_project` first, `create_project` only when the
-/// name is free), so the get-or-create fallback inside `create_project` is
-/// never relied on. If this call creates the project and the following repo
-/// insert fails, the project is deleted best-effort (`delete_project` also
-/// removes any repo rows in the same transaction) and the original error is
+/// name is free). `create_project` is itself get-or-create, so a concurrent
+/// process can win the race and `create_project` then returns that process's
+/// project; `created` alone is therefore not proof that this call made it. If
+/// this call created the project and the following repo insert fails, the
+/// project is deleted best-effort only when it holds no repo row for another
+/// checkout (see `holds_only_this_checkout`), and the original error is
 /// returned. A project that pre-existed is never touched.
 pub(super) fn attach_or_create(
     storage: &dyn Storage,
@@ -33,7 +35,7 @@ pub(super) fn attach_or_create(
     match add_repo_row(storage, &project.id, dir_name, repo_root_str, identity) {
         Ok(repo) => Ok(ResolvedRepo { project, repo }),
         Err(e) => {
-            if created {
+            if created && holds_only_this_checkout(storage, &project.id, repo_root_str) {
                 delete_orphan_project(storage, name, &project.id);
             }
             Err(e)
@@ -61,6 +63,15 @@ fn add_repo_row(
     })
 }
 
+/// True when the project has no repo row for any checkout other than
+/// `repo_root_str`. A lookup failure answers false, so the project is kept.
+fn holds_only_this_checkout(storage: &dyn Storage, project_id: &str, repo_root_str: &str) -> bool {
+    matches!(
+        storage.list_repos(project_id),
+        Ok(repos) if repos.iter().all(|r| r.local_path == repo_root_str)
+    )
+}
+
 /// Best-effort removal of a project this call created but could not populate.
 /// The caller returns its own original error; a failed delete only leaves an
 /// orphan, so it is reported as a one-line sanitized notice instead.
@@ -72,5 +83,28 @@ fn delete_orphan_project(storage: &dyn Storage, name: &str, id: &str) {
             sanitize(id),
             sanitize(&e.to_string()),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sqlite::SqliteStorage;
+
+    #[test]
+    fn holds_only_this_checkout_is_true_for_an_empty_project() {
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let p = s.create_project("empty", None).unwrap();
+        assert!(holds_only_this_checkout(&s, &p.id, "/work/mine"));
+    }
+
+    #[test]
+    fn holds_only_this_checkout_is_false_when_another_checkout_is_attached() {
+        // A concurrent registration won the race and attached its own checkout
+        // to the project; the failing call must not delete that project.
+        let s = SqliteStorage::open_in_memory().unwrap();
+        let p = s.create_project("raced", None).unwrap();
+        s.add_repo(&p.id, "other", "/work/other").unwrap();
+        assert!(!holds_only_this_checkout(&s, &p.id, "/work/mine"));
     }
 }

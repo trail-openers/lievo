@@ -368,6 +368,12 @@ fn test_json_escape_backslash_and_quote() {
 }
 
 #[test]
+fn test_json_escape_control_characters_are_unicode_escaped() {
+    assert_eq!(json_escape("\u{1b}[2J"), "\\u001b[2J");
+    assert_eq!(json_escape("a\nb"), "a\\u000ab");
+}
+
+#[test]
 fn test_delete_existing_project_removes_project() {
     let s = storage();
     create_project(&s, "to-delete").unwrap();

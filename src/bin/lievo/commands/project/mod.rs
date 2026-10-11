@@ -18,9 +18,19 @@ pub use query_ops::status;
 pub use repo_ops::{add_repo, delete_repo, link_repo, list_repos};
 pub use selfcheck_ops::{SelfcheckArgs, selfcheck};
 
-/// Escape backslashes and double-quotes so string values are safe in hand-rolled JSON.
+/// Escape backslashes, double-quotes and control characters so string values
+/// are safe in hand-rolled JSON and do not write raw ESC/LF bytes to stdout.
 pub fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -348,7 +348,7 @@ impl RepoConfig {
                 return Err(LievoError::InvalidConfig {
                     path: ".lievo/config.yaml".to_string(),
                     reason: format!(
-                        "identity '{identity}' must not be empty, must be {MAX_KEY_LEN} bytes or fewer, and must not contain empty, '.' or '..' path segments or control characters"
+                        "identity {identity:?} must not be empty, must be {MAX_KEY_LEN} bytes or fewer, and must not contain empty, '.' or '..' path segments or control characters"
                     ),
                 });
             }
