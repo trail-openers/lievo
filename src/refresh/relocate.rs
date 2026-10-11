@@ -5,20 +5,23 @@
 //! directory and status file move from the old path's hash to the new one's,
 //! and the row is updated afterwards. Nothing is reindexed.
 //!
-//! Ordering: take the old and new locks (in hash order), re-read the row under
-//! them, check the project, rename the filesystem state, and only then update
-//! the row. A failed row update is judged by re-reading the row: if it already
-//! names the new path the move is committed; rollback happens only when it
-//! still names the old path. Other failures roll back completed renames, leave
-//! the row untouched and return a [`SkipReason`], so the caller registers
+//! Ordering: check the identity's provenance, take the old and new locks (in
+//! hash order), re-read the row under them, check the project, rename the
+//! filesystem state, and only then update the row. A failed row update is
+//! judged by re-reading the row: if it already names the new path the move is
+//! committed; rollback happens only when it still names the old path. Other
+//! failures roll back completed renames, leave the row untouched and return a
+//! [`SkipReason`], so the caller registers fresh. If the row cannot be
+//! confirmed as either path, the renames are kept and
+//! [`SkipReason::RowStateUnknown`] is returned: the caller must not register
 //! fresh. This module prints nothing; the caller decides how to report a skip.
 //!
 //! A rollback that itself fails leaves some files at the new hash while the
 //! row still names the old path. Nothing finishes this automatically: the
 //! fallback fresh registration at the new path then shares the new index
-//! directory with the split files. Recovery is manual (the notice printed by
-//! the caller says what to do), and the new checkout must not be indexed until
-//! it is done.
+//! directory with the split files. Recovery is manual (the error or notice
+//! the caller produces says what to do), and the new checkout must not be
+//! indexed until it is done.
 //!
 //! The lock files are never removed. Unlinking one after release lets a
 //! second process lock an orphaned inode while a third creates a new file at
@@ -31,6 +34,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use super::lock::try_acquire_hash;
+use crate::identity::{Identity, IdentitySource};
 use crate::layout::{CanonicalPath, hash_canonical_path, index_dir_for_hash, status_path_for_hash};
 use crate::model::{Project, Repository};
 use crate::storage::Storage;
@@ -49,6 +53,10 @@ pub enum SkipReason {
     LockFailed(io::ErrorKind, String),
     /// A live process holds the old or the new index lock.
     IndexInUse,
+    /// The identity is not from the origin remote, or it does not match the
+    /// row's stored `git_url` (case-insensitively). Only an origin identity
+    /// may move a row. Nothing is touched.
+    NotOriginIdentity,
     /// The row changed while relocation was starting.
     RowChanged,
     /// The row's project is missing, so a moved row would have no owner.
@@ -60,6 +68,11 @@ pub enum SkipReason {
     /// A rename or the row update failed. `split` lists renames that could
     /// not be undone: those files stay at `to` instead of `from`.
     Move { cause: String, split: Vec<Rename> },
+    /// The row update failed and the row names neither path (or could not be
+    /// read), so its state is unknown. `renamed` lists the files left at
+    /// their new location; they are not rolled back. The caller must not
+    /// register fresh at the old or the new path.
+    RowStateUnknown { renamed: Vec<Rename> },
 }
 
 impl fmt::Display for SkipReason {
@@ -69,6 +82,9 @@ impl fmt::Display for SkipReason {
             Self::Unusable(e) => f.write_str(e),
             Self::LockFailed(_, e) => write!(f, "its lock could not be taken: {e}"),
             Self::IndexInUse => f.write_str("its index is in use by another process"),
+            Self::NotOriginIdentity => {
+                f.write_str("its identity is not the origin remote's identity")
+            }
             Self::RowChanged => f.write_str("its row changed while relocation was starting"),
             Self::ProjectMissing => f.write_str("its project is missing"),
             Self::IndexOutsideIndexDir => {
@@ -76,6 +92,7 @@ impl fmt::Display for SkipReason {
             }
             Self::StorageRead(e) => write!(f, "its row could not be read: {e}"),
             Self::Move { cause, .. } => write!(f, "the move failed: {cause}"),
+            Self::RowStateUnknown { .. } => f.write_str("the repo row state is unknown"),
         }
     }
 }
@@ -94,7 +111,7 @@ pub enum RelocateOutcome {
         /// A secondary problem after the commit, for the caller to report.
         notice: Option<String>,
     },
-    /// Relocation was not done; the caller registers fresh.
+    /// Relocation was not done. See [`SkipReason`] for what the caller must do.
     Skipped(SkipReason),
 }
 
@@ -249,7 +266,7 @@ fn lock_pair(data_dir: &Path, plan: &Plan) -> Result<Vec<File>, SkipReason> {
         .collect()
 }
 
-/// What the row says after a failed update, judged by re-reading it.
+/// What the row says after a failed update, judged by a re-read of the row.
 enum RowAfterError {
     /// The row names the new path: the update committed despite the error.
     Committed(Box<Repository>),
@@ -274,19 +291,62 @@ fn row_after_error(
     }
 }
 
-/// Re-key `repo` (a vanished checkout with a stored identity) to `new_root`,
-/// using the lievo data dir.
+/// The outcome of a failed row update, given what the row now says. `done`
+/// are the renames made before the update; they are undone only for
+/// [`RowAfterError::OldPath`] and kept otherwise.
+fn failed_update_outcome(
+    cause: String,
+    state: RowAfterError,
+    done: &[Rename],
+    project: Project,
+) -> RelocateOutcome {
+    match state {
+        RowAfterError::Committed(repo) => RelocateOutcome::Moved {
+            repo,
+            project: Box::new(project),
+            notice: Some(format!(
+                "the row update reported an error ({cause}), but the row already names the new path"
+            )),
+        },
+        RowAfterError::OldPath => RelocateOutcome::Skipped(SkipReason::Move {
+            cause,
+            split: roll_back(done),
+        }),
+        RowAfterError::Unknown => RelocateOutcome::Skipped(SkipReason::RowStateUnknown {
+            renamed: done.to_vec(),
+        }),
+    }
+}
+
+/// Whether `identity` may move `repo`: it must come from the origin remote
+/// (a repo-controlled `identity:` override never moves a row) and name the
+/// same identity the row was stored under. A row with no stored `git_url`
+/// never moves.
+fn may_move(repo: &Repository, identity: &Identity) -> bool {
+    identity.source == IdentitySource::Origin
+        && repo
+            .git_url
+            .as_deref()
+            .is_some_and(|url| url.eq_ignore_ascii_case(&identity.key))
+}
+
+/// Re-key `repo` (a vanished checkout) to `new_root`, using the lievo data dir.
 ///
-/// Only a storage read failure is an error; every other failure is a
-/// [`RelocateOutcome::Skipped`].
+/// Never returns an error. Every failure is a [`RelocateOutcome::Skipped`],
+/// including a failed storage read ([`SkipReason::StorageRead`]). A move is
+/// made only if `identity` passes the provenance check (see [`may_move`]);
+/// otherwise the result is `Skipped(NotOriginIdentity)` with nothing touched.
+/// Only [`SkipReason::RowStateUnknown`] needs the caller to act beyond
+/// reporting: it must not register fresh.
 pub fn relocate_checkout(
     storage: &dyn Storage,
     repo: &Repository,
     new_root: &Path,
-) -> crate::Result<RelocateOutcome> {
+    identity: &Identity,
+) -> RelocateOutcome {
     match crate::layout::lievo_data_dir() {
-        Ok(data_dir) => relocate_in(storage, repo, new_root, &data_dir),
-        Err(e) => Ok(RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string()))),
+        Ok(data_dir) => relocate_in(storage, repo, new_root, identity, &data_dir),
+        Err(e) => RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string())),
     }
 }
 
@@ -299,23 +359,28 @@ fn read_project(storage: &dyn Storage, row: &Repository) -> Result<Project, Skip
     }
 }
 
-/// [`relocate_checkout`] with an explicit data dir.
+/// [`relocate_checkout`] with an explicit data dir. The provenance check runs
+/// first, so a non-origin identity touches nothing, not even the data dir.
 fn relocate_in(
     storage: &dyn Storage,
     repo: &Repository,
     new_root: &Path,
+    identity: &Identity,
     data_dir: &Path,
-) -> crate::Result<RelocateOutcome> {
+) -> RelocateOutcome {
+    if !may_move(repo, identity) {
+        return RelocateOutcome::Skipped(SkipReason::NotOriginIdentity);
+    }
     let plan = match Plan::new(repo, new_root, data_dir) {
         Ok(plan) => plan,
-        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
+        Err(reason) => return RelocateOutcome::Skipped(reason),
     };
     if let Err(e) = fs::create_dir_all(data_dir) {
-        return Ok(RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string())));
+        return RelocateOutcome::Skipped(SkipReason::DataDir(e.to_string()));
     }
     let locks = match lock_pair(data_dir, &plan) {
         Ok(locks) => locks,
-        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
+        Err(reason) => return RelocateOutcome::Skipped(reason),
     };
 
     // Re-read the row under the locks. A concurrent relocation may have moved
@@ -323,33 +388,29 @@ fn relocate_in(
     // is nothing left to rename.
     let current = match storage.get_repo(&repo.id) {
         Ok(Some(row)) => row,
-        Ok(None) => return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged)),
-        Err(e) => {
-            return Ok(RelocateOutcome::Skipped(SkipReason::StorageRead(
-                e.to_string(),
-            )));
-        }
+        Ok(None) => return RelocateOutcome::Skipped(SkipReason::RowChanged),
+        Err(e) => return RelocateOutcome::Skipped(SkipReason::StorageRead(e.to_string())),
     };
     let moved_by_other = current.local_path == plan.new_path;
     if !moved_by_other && current.local_path != repo.local_path {
-        return Ok(RelocateOutcome::Skipped(SkipReason::RowChanged));
+        return RelocateOutcome::Skipped(SkipReason::RowChanged);
     }
     // Check the project before the commit point: once the row is updated, a
     // missing project could only be reported as a failure of a finished move.
     let project = match read_project(storage, &current) {
         Ok(project) => project,
-        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
+        Err(reason) => return RelocateOutcome::Skipped(reason),
     };
     if moved_by_other {
-        return Ok(RelocateOutcome::Moved {
+        return RelocateOutcome::Moved {
             repo: Box::new(current),
             project: Box::new(project),
             notice: None,
-        });
+        };
     }
     let index_path = match rebase_index_path(current.index_path.as_deref(), &plan) {
         Ok(path) => path,
-        Err(reason) => return Ok(RelocateOutcome::Skipped(reason)),
+        Err(reason) => return RelocateOutcome::Skipped(reason),
     };
 
     // Move the filesystem state, recording each rename for rollback. The row
@@ -377,29 +438,13 @@ fn relocate_in(
                 ..current
             };
             let (row, notice) = after_commit(|| storage.get_repo(&repo.id), fallback);
-            Ok(RelocateOutcome::Moved {
+            RelocateOutcome::Moved {
                 repo: Box::new(row),
                 project: Box::new(project),
                 notice,
-            })
+            }
         }
-        Err((cause, RowAfterError::Committed(row))) => Ok(RelocateOutcome::Moved {
-            repo: row,
-            project: Box::new(project),
-            notice: Some(format!(
-                "the row update reported an error ({cause}), but the row already names the new path"
-            )),
-        }),
-        Err((cause, RowAfterError::OldPath)) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
-            cause,
-            split: roll_back(&done),
-        })),
-        Err((cause, RowAfterError::Unknown)) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
-            cause: format!(
-                "{cause}; the row could not be checked, so the moved index files were left at the new path"
-            ),
-            split: done,
-        })),
+        Err((cause, state)) => failed_update_outcome(cause, state, &done, project),
     }
 }
 

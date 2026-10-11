@@ -21,8 +21,8 @@ mod tests;
 
 use crate::LievoError;
 use crate::config::RepoConfig;
-use crate::identity::{IdentitySource, derive_identity};
-use crate::refresh::relocate::{RelocateOutcome, SkipReason, relocate_checkout};
+use crate::identity::derive_identity;
+use crate::refresh::relocate::{RelocateOutcome, Rename, SkipReason, relocate_checkout};
 use crate::storage::Storage;
 use attach::{Checkout, NameSource, attach_picked};
 use lookup::{backfill_git_url, path_exists};
@@ -129,9 +129,6 @@ pub fn register(
     // Identity is derived once here and threaded through (no second call).
     let derived = derive_identity(request.repo_root, &config);
     let identity_ref: Option<&str> = derived.as_ref().map(|d| d.key.as_str());
-    let identity_from_origin = derived
-        .as_ref()
-        .is_some_and(|d| d.source == IdentitySource::Origin);
 
     // Step 1: path match. The row is re-read from storage once, after the
     // backfill attempt (written or not), so the result always reflects the
@@ -188,10 +185,12 @@ pub fn register(
         }
         // Step 3b (issue #30): no live twin, so a vanished checkout of this
         // identity may have moved here. Re-key its row instead of registering
-        // a fresh project. A skipped move falls through to step 4. Only an
-        // origin-derived identity drives a move (see the trust note above).
-        if identity_from_origin && let Some(vanished) = matches.first() {
-            match relocate_checkout(storage, vanished, request.repo_root)? {
+        // a fresh project. A skipped move falls through to step 4. The
+        // provenance gate (origin-only) lives in `relocate_checkout`.
+        if let Some(vanished) = matches.first()
+            && let Some(ident) = derived.as_ref()
+        {
+            match relocate_checkout(storage, vanished, request.repo_root, ident) {
                 RelocateOutcome::Moved {
                     repo,
                     project,
@@ -209,6 +208,18 @@ pub fn register(
                         project: *project,
                         repo: *repo,
                     });
+                }
+                // Not an origin identity: a repo-controlled override never
+                // moves a row, silently, as before.
+                RelocateOutcome::Skipped(SkipReason::NotOriginIdentity) => {}
+                // The row's state is unknown: registering fresh here could
+                // share the index directory with the files left behind.
+                RelocateOutcome::Skipped(SkipReason::RowStateUnknown { renamed }) => {
+                    return Err(LievoError::RepoStateUnknown(row_state_unknown_notice(
+                        &vanished.local_path,
+                        repo_root_str,
+                        &renamed,
+                    )));
                 }
                 RelocateOutcome::Skipped(reason) => {
                     report_skipped_move(&vanished.local_path, repo_root_str, &reason);
@@ -249,6 +260,33 @@ fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
         sanitize(&reason.to_string()),
         sanitize(new_path),
     );
+}
+
+/// The error for a failed move whose row state is unknown. Nothing is
+/// registered. The files in `renamed` stay at their new location, so the user
+/// must reconcile them with the row before indexing `new_path`.
+fn row_state_unknown_notice(old_path: &str, new_path: &str, renamed: &[Rename]) -> String {
+    let old_path = sanitize(old_path);
+    let new_path = sanitize(new_path);
+    let files = if renamed.is_empty() {
+        "no index files were moved".to_string()
+    } else {
+        let list = renamed
+            .iter()
+            .map(|r| {
+                format!(
+                    "'{}' (was '{}')",
+                    sanitize(&r.to.to_string_lossy()),
+                    sanitize(&r.from.to_string_lossy())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("these index files are at their new location: {list}")
+    };
+    format!(
+        "checkout '{old_path}' appears to have moved to '{new_path}', but the repo row state is unknown: the row update failed and the row could not be confirmed as either path, so nothing was registered. {files}. Recovery: check the row for '{old_path}' (`lievo admin list-repos`). If it names '{new_path}', the move committed: re-run lievo in '{new_path}' and leave the files. If it names '{old_path}', rename each listed file back to its original path, then re-run lievo in '{new_path}'."
+    )
 }
 
 /// The notice for index files that a failed rollback left at `to` instead of

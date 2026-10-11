@@ -25,6 +25,7 @@ pub enum ErrorCode {
     Io,
     RetrievalError,
     SummarizationFailed,
+    RepoStateUnknown,
 }
 
 impl ErrorCode {
@@ -53,6 +54,7 @@ impl ErrorCode {
             ErrorCode::Io => "IO",
             ErrorCode::RetrievalError => "RETRIEVAL_ERROR",
             ErrorCode::SummarizationFailed => "SUMMARIZATION_FAILED",
+            ErrorCode::RepoStateUnknown => "REPO_STATE_UNKNOWN",
         }
     }
 
@@ -81,6 +83,7 @@ impl ErrorCode {
             ErrorCode::Io => "Io",
             ErrorCode::RetrievalError => "RetrievalError",
             ErrorCode::SummarizationFailed => "SummarizationFailed",
+            ErrorCode::RepoStateUnknown => "RepoStateUnknown",
         }
     }
 
@@ -116,6 +119,7 @@ impl LievoError {
             LievoError::Io(_) => ErrorCode::Io,
             LievoError::RetrievalError(_) => ErrorCode::RetrievalError,
             LievoError::SummarizationFailed(_) => ErrorCode::SummarizationFailed,
+            LievoError::RepoStateUnknown(_) => ErrorCode::RepoStateUnknown,
         }
     }
 }
@@ -170,6 +174,9 @@ pub enum LievoError {
     RetrievalError(String),
     #[error("Summarization failed: {0}")]
     SummarizationFailed(String),
+    /// A relocation's row state is unknown; the message says how to recover.
+    #[error("{0}")]
+    RepoStateUnknown(String),
 }
 
 pub type Result<T> = std::result::Result<T, LievoError>;

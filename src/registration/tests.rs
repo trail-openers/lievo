@@ -373,3 +373,28 @@ fn auto_name_repicks_through_repeated_races_until_one_attaches() {
     assert_eq!(resolved.project.name, "stuck");
     assert_eq!(s.list_projects().unwrap().len(), 6);
 }
+
+#[test]
+fn row_state_unknown_notice_lists_renamed_paths_and_recovery() {
+    // The error names every file left at its new location, both paths, and
+    // the two recovery branches; nothing else is implied to be registered.
+    let renamed = vec![crate::refresh::relocate::Rename {
+        from: std::path::PathBuf::from("/data/indices/old/ts"),
+        to: std::path::PathBuf::from("/data/indices/new/ts"),
+    }];
+
+    let notice = super::row_state_unknown_notice("/old/co", "/new/co", &renamed);
+
+    assert!(notice.contains("row state is unknown"), "{notice}");
+    assert!(notice.contains("'/data/indices/new/ts' (was '/data/indices/old/ts')"));
+    assert!(notice.contains("'/old/co'") && notice.contains("'/new/co'"));
+    assert!(notice.contains("rename each listed file back"), "{notice}");
+    assert!(notice.contains("re-run lievo in '/new/co'"), "{notice}");
+    assert!(!notice.contains("could not be moved back"), "{notice}");
+}
+
+#[test]
+fn row_state_unknown_notice_without_moved_files_says_so() {
+    let notice = super::row_state_unknown_notice("/old/co", "/new/co", &[]);
+    assert!(notice.contains("no index files were moved"), "{notice}");
+}

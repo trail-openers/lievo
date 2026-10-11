@@ -74,6 +74,14 @@ fn open_lock(data: &Path, hash: &str) -> File {
     open_lock_file(&lock_path_for_hash(data, hash)).unwrap()
 }
 
+/// The identity a fixture's row was stored under: the origin remote.
+fn origin() -> Identity {
+    Identity {
+        key: GIT_URL.to_string(),
+        source: IdentitySource::Origin,
+    }
+}
+
 /// The moved row, panicking with the skip reason otherwise.
 fn moved(outcome: RelocateOutcome) -> Repository {
     match outcome {
@@ -112,7 +120,7 @@ fn successful_move_rekeys_row_and_index_without_reindex() {
     };
     f.storage.upsert_entity(&entity).unwrap();
 
-    let outcome = relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap();
+    let outcome = relocate_in(&f.storage, &f.repo, &f.new_root, &origin(), &f.data);
     let moved = moved(outcome);
 
     let new_hash = repo_hash(&new_canon(&f)).unwrap();
@@ -154,7 +162,13 @@ fn busy_old_lock_skips_move_and_leaves_row_untouched() {
     let holder = open_lock(&f.data, &f.old_hash);
     holder.try_lock().unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
 
     assert_eq!(
         reason,
@@ -188,7 +202,13 @@ fn busy_new_lock_skips_move_with_no_renames() {
     let holder = open_lock(&f.data, &new_hash);
     holder.try_lock().unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
 
     assert_eq!(
         reason,
@@ -219,7 +239,7 @@ fn row_already_at_new_path_is_a_finished_move_not_a_conflict() {
         .update_repo_local_path(&f.repo.id, &new_path, None)
         .unwrap();
 
-    match relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap() {
+    match relocate_in(&f.storage, &f.repo, &f.new_root, &origin(), &f.data) {
         RelocateOutcome::Moved { repo, notice, .. } => {
             assert!(
                 notice.is_none(),
@@ -278,6 +298,57 @@ fn failed_row_update_is_judged_by_the_row_it_left_behind() {
 }
 
 #[test]
+fn unknown_row_state_keeps_renames_and_is_not_a_split_move() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let project = f.storage.get_project_by_id(&f.project_id).unwrap().unwrap();
+    let done = vec![Rename {
+        from: base.join("a"),
+        to: base.join("a-new"),
+    }];
+
+    let outcome = failed_update_outcome("boom".to_string(), RowAfterError::Unknown, &done, project);
+
+    match outcome {
+        RelocateOutcome::Skipped(SkipReason::RowStateUnknown { renamed }) => {
+            assert_eq!(renamed, done, "the renames are listed and not undone");
+        }
+        other => panic!("expected RowStateUnknown, got {other:?}"),
+    }
+}
+
+#[test]
+fn committed_or_rolled_back_update_outcomes_are_unchanged() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let project = || f.storage.get_project_by_id(&f.project_id).unwrap().unwrap();
+    let new_path = "/new/checkout".to_string();
+    let at_new = Repository {
+        local_path: new_path.clone(),
+        ..f.repo.clone()
+    };
+
+    match failed_update_outcome(
+        "boom".to_string(),
+        RowAfterError::Committed(Box::new(at_new)),
+        &[],
+        project(),
+    ) {
+        RelocateOutcome::Moved { repo, notice, .. } => {
+            assert_eq!(repo.local_path, new_path);
+            assert!(notice.unwrap().contains("boom"));
+        }
+        other => panic!("expected Moved, got {other:?}"),
+    }
+    assert!(matches!(
+        failed_update_outcome("boom".to_string(), RowAfterError::OldPath, &[], project()),
+        RelocateOutcome::Skipped(SkipReason::Move { ref split, .. }) if split.is_empty()
+    ));
+}
+
+#[test]
 fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
@@ -289,7 +360,13 @@ fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     fs::create_dir_all(&blocker).unwrap();
     fs::write(blocker.join("keep"), b"x").unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
 
     assert!(matches!(reason, SkipReason::Move { ref split, .. } if split.is_empty()));
     assert!(
@@ -429,7 +506,13 @@ fn index_path_outside_index_dir_skips_without_moving() {
         .unwrap();
     let repo = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &repo, &f.new_root, &f.data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
 
     assert_eq!(reason, SkipReason::IndexOutsideIndexDir);
     assert!(
@@ -462,7 +545,13 @@ fn index_path_with_parent_component_under_old_dir_skips_without_moving() {
         .unwrap();
     let repo = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &repo, &f.new_root, &f.data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
 
     assert_eq!(reason, SkipReason::IndexOutsideIndexDir);
     assert!(
@@ -475,35 +564,26 @@ fn index_path_with_parent_component_under_old_dir_skips_without_moving() {
 }
 
 #[test]
-fn identity_override_never_drives_a_move() {
+fn override_identity_is_refused_by_relocate_and_touches_nothing() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
-    let _env = EnvGuard::new(&base.join("db.sqlite"));
-    let data = lievo_data_dir().unwrap();
-    let f = fixture(&base, data, true);
-    // The identity comes only from a repo-controlled override, not an origin.
-    fs::create_dir_all(f.new_root.join(".lievo")).unwrap();
-    fs::write(
-        f.new_root.join(".lievo").join("config.yaml"),
-        format!("identity: {GIT_URL}\n"),
-    )
-    .unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let by_override = Identity {
+        key: GIT_URL.to_string(),
+        source: IdentitySource::Override,
+    };
 
-    let resolved = register(
+    let reason = skipped(relocate_in(
         &f.storage,
-        &RegistrationRequest {
-            repo_root: &f.new_root,
-            project_name: None,
-        },
-    )
-    .unwrap();
+        &f.repo,
+        &f.new_root,
+        &by_override,
+        &f.data,
+    ));
 
-    assert_ne!(
-        resolved.project.id, f.project_id,
-        "an override claiming a vanished identity registers fresh"
-    );
-    let old = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
-    assert_eq!(old.local_path, f.old_path, "the vanished row is untouched");
+    assert_eq!(reason, SkipReason::NotOriginIdentity);
+    let row = f.storage.get_repo(&f.repo.id).unwrap().unwrap();
+    assert_eq!(row.local_path, f.old_path);
     assert!(
         f.data
             .join("indices")
@@ -511,6 +591,57 @@ fn identity_override_never_drives_a_move() {
             .join(INDEX_FILE)
             .exists()
     );
+}
+
+#[test]
+fn origin_identity_must_match_stored_git_url_case_insensitively() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+    let other_repo = Identity {
+        key: "github.com/other/tool".to_string(),
+        source: IdentitySource::Origin,
+    };
+    assert_eq!(
+        skipped(relocate_in(
+            &f.storage,
+            &f.repo,
+            &f.new_root,
+            &other_repo,
+            &f.data,
+        )),
+        SkipReason::NotOriginIdentity
+    );
+
+    let shouted = Identity {
+        key: "GitHub.com/Acme/Tool".to_string(),
+        source: IdentitySource::Origin,
+    };
+    let moved = moved(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &shouted,
+        &f.data,
+    ));
+    assert_eq!(moved.local_path, new_canon(&f).to_str().unwrap());
+}
+
+#[test]
+fn row_without_stored_git_url_never_moves() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), false);
+
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &origin(),
+        &f.data,
+    ));
+
+    assert_eq!(reason, SkipReason::NotOriginIdentity);
 }
 
 #[test]
@@ -522,7 +653,13 @@ fn unusable_data_dir_falls_back_without_error_and_keeps_row() {
     let bad_data = base.join("not-a-dir");
     fs::write(&bad_data, b"x").unwrap();
 
-    let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &bad_data).unwrap());
+    let reason = skipped(relocate_in(
+        &f.storage,
+        &f.repo,
+        &f.new_root,
+        &origin(),
+        &bad_data,
+    ));
 
     assert!(
         matches!(reason, SkipReason::DataDir(_)),
