@@ -5,10 +5,10 @@
 //! Rules: without an identity, `<dir>`, `<dir>-2`, `<dir>-3`, …. With an
 //! identity, fresh names are the bare name, then `<owner>/<repo>`,
 //! `<owner>/<repo>-2`, …. Fresh naming always finds a free name. The live-twin
-//! name (`<repo>@<dir>`) never takes a suffix.
+//! name is `<repo>@<dir>`, then `<repo>@<dir>-2`, `-3`, … (the first name that
+//! is free or already holds this identity).
 
 use super::lookup::project_holds_identity;
-use crate::LievoError;
 use crate::storage::Storage;
 use std::path::Path;
 
@@ -26,14 +26,6 @@ fn owner_prefixed_name(identity: &str) -> Option<String> {
         return None;
     }
     Some(format!("{owner}/{repo}"))
-}
-
-/// The error for an identity-bearing name that no free candidate is left for.
-fn name_unavailable(base: &str) -> LievoError {
-    LievoError::InvalidInput(format!(
-        "project name '{}' is taken by a different identity; pass --project <name> to choose one",
-        super::sanitize(base)
-    ))
 }
 
 /// First free `base`, `base-2`, `base-3`, … (no identity, so no owner names).
@@ -69,24 +61,26 @@ pub(super) fn pick_fresh_name(
     }
 }
 
-/// Name for a live same-identity twin (`<repo>@<dir>`). Returns `base` when it
-/// is free or already held by `identity`, where the checkout joins it. Any
-/// other holder makes the name unavailable; there is no suffix for an
-/// identity-bearing name.
+/// Name for a live same-identity twin (`<repo>@<dir>`). Returns the first of
+/// `base`, `base-2`, `base-3`, … that is free or already held by `identity`,
+/// where the checkout joins it. A name held by any other identity is skipped.
 pub(super) fn pick_name(
     storage: &dyn Storage,
     base: &str,
     identity: &str,
 ) -> crate::Result<String> {
-    match storage.get_project(base)? {
-        None => Ok(base.to_string()),
-        Some(project) => {
-            if project_holds_identity(storage, &project.id, Some(identity))? {
-                Ok(base.to_string())
-            } else {
-                Err(name_unavailable(base))
-            }
+    let mut candidate = base.to_string();
+    let mut n = 2;
+    loop {
+        let usable = match storage.get_project(&candidate)? {
+            None => true,
+            Some(project) => project_holds_identity(storage, &project.id, Some(identity))?,
+        };
+        if usable {
+            return Ok(candidate);
         }
+        candidate = format!("{base}-{n}");
+        n += 1;
     }
 }
 

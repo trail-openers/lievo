@@ -357,3 +357,48 @@ fn identity_bearing_twin_never_reuses_a_different_identity_project() {
         "the new path must be registered with its own row in the new project"
     );
 }
+
+/// Issue #29: a live same-identity twin whose `<repo>@<dir>` name is held by a
+/// DIFFERENT identity takes the next free suffix instead of erroring.
+#[test]
+fn live_twin_skips_name_held_by_other_identity_to_suffix() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let d1 = git_tempdir_identity("twin", "git@github.com:acme/tool");
+    let d2 = git_tempdir_identity("twin", "git@github.com:acme/tool");
+    let r1 = d1.path().join("twin");
+    let r2 = d2.path().join("twin");
+
+    // A live acme/tool checkout makes the next registration a live twin.
+    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
+    assert_eq!(first.project.name, "twin");
+
+    // `tool@twin` is pre-claimed by a different identity.
+    let other = storage
+        .create_project_if_absent("tool@twin", None)
+        .unwrap()
+        .expect("name must be free to claim");
+    let other_repo = storage
+        .add_repo(&other.id, "elsewhere", "/nowhere/other-tool")
+        .unwrap();
+    storage
+        .set_repo_git_url(&other_repo.id, "github.com/other/tool")
+        .unwrap();
+
+    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
+    assert_eq!(
+        second.project.name, "tool@twin-2",
+        "live twin takes the next free <repo>@<dir>-N name"
+    );
+    assert_ne!(
+        second.project.id, other.id,
+        "never attached to the other identity"
+    );
+    assert_eq!(
+        storage.list_repos(&other.id).unwrap().len(),
+        1,
+        "the other identity's project is left untouched"
+    );
+    let repos = storage.list_repos(&second.project.id).unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].local_path, r2.to_str().unwrap());
+}
