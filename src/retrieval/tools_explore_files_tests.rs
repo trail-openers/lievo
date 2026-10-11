@@ -773,6 +773,7 @@ fn files_batch_single_oversized_file_ladder_sheds_depth_then_source() {
 
 #[test]
 fn files_batch_identical_request_is_byte_identical() {
+    let _env_lock = crate::test_env_support::env_lock();
     let build = || -> String {
         let (storage, project_id, repo_id) = setup();
         let tmp = tempfile::tempdir().unwrap();
@@ -784,8 +785,7 @@ fn files_batch_identical_request_is_byte_identical() {
         tool.call(json!({"files": ["z.rs", "x.rs", "y.rs"]}))
             .expect("call must succeed")
     };
-    let a = build();
-    let b = build();
+    let (a, b) = (build(), build());
     assert_eq!(a, b, "identical batch requests must be byte-identical");
 }
 

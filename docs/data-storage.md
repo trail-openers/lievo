@@ -28,7 +28,7 @@ Tree-sitter and vector search index for entity discovery. Used by `search_entiti
 - Each repository subdirectory contains the tree-sitter index and usearch vector embeddings
 - Model weights (minishlab/potion-code-16M-v2, ~16MB) are automatically downloaded from Hugging Face on first use and cached locally, by default in `~/.cache/huggingface/hub`
 - To use another location (e.g. a read-only default cache), set `HF_HUB_CACHE` to the hub cache directory, or `HF_HOME` to a directory whose `hub/` subdirectory holds the cache. `HF_HUB_CACHE` takes precedence over `HF_HOME`. The download token is read from `HF_HOME/token` (or `~/.cache/huggingface/token` when `HF_HOME` is unset or empty), so `HF_HUB_CACHE` does not change authentication.
-- `HF_ENDPOINT` is honoured when set, but must use `https://`. Plain `http://` is accepted only for `localhost` or `127.0.0.1` (with optional port or path); other hosts, including `[::1]`, are rejected. Scheme matching is case-sensitive, so `HTTPS://` is rejected too. A non-empty value that fails this check is an error, not ignored (empty is treated as unset).
+- `HF_ENDPOINT` is honoured when set (a non-empty value replaces the Hugging Face URL), as hf-hub does.
 
 Created during `lievo refresh`.
 

@@ -1,6 +1,9 @@
 // Model caching and download utilities for semantic search.
 
-use hf_hub::{Cache, Repo, RepoType, api::sync::Api, api::sync::ApiBuilder};
+use hf_hub::{
+    Cache, Repo, RepoType,
+    api::sync::{Api, ApiBuilder, ApiError},
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -72,55 +75,33 @@ pub(crate) fn resolve_hf_cache_dir() -> PathBuf {
     Cache::default().path().clone()
 }
 
-/// Builds a HuggingFace API client rooted at `cache_dir`, keeping `HF_ENDPOINT`
-/// support from `ApiBuilder::from_env`.
-///
-/// Uses `from_cache`, not `from_env().with_cache_dir()`: the latter would read the
-/// token from the default cache. A set `HF_ENDPOINT` that is not UTF-8 or not an
-/// allowed scheme is an error, not ignored: a user who configured a mirror must not
-/// be silently sent to the default hub.
+/// Builds a HuggingFace API client rooted at `cache_dir`, honouring `HF_ENDPOINT` the
+/// way `ApiBuilder::from_env` does (a non-empty value replaces the hub URL).
 fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
-    // The token comes from `token_cache()`, not from the overridden cache dir: hf-hub
-    // derives the token path from the cache dir, so `HF_HUB_CACHE` would otherwise hide a
-    // login done with `huggingface-cli login`.
+    // Token follows HF_HOME (or the default cache), not `cache_dir`, as `from_env` does.
     let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()))
         .with_token(token_cache().token());
-    if let Some(raw) = non_empty_env("HF_ENDPOINT") {
-        let endpoint = raw.into_string().map_err(|_| {
-            crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
-        })?;
-        if !endpoint_is_allowed(&endpoint) {
-            return Err(crate::LievoError::RetrievalError(format!(
-                "HF_ENDPOINT {endpoint} must use https://, or http:// only for localhost or 127.0.0.1"
-            )));
-        }
+    if let Some(endpoint) = std::env::var("HF_ENDPOINT").ok().filter(|e| !e.is_empty()) {
         builder = builder.with_endpoint(endpoint);
     }
     builder.build().map_err(|e| {
         crate::LievoError::RetrievalError(format!(
-            "failed to init HuggingFace API (HF cache dir {}): {e}",
-            cache_dir.display()
+            "failed to init HuggingFace API ({})",
+            cache_error_context(cache_dir, &e)
         ))
     })
 }
 
-/// Endpoints deliver the model artefacts, so plain `http://` is limited to loopback
-/// (mirrors on this machine and tests); anything else must use TLS.
-fn endpoint_is_allowed(endpoint: &str) -> bool {
-    if endpoint.starts_with("https://") {
-        return true;
+/// Context for a failed HF cache operation. Always names the cache dir; the override
+/// hint is added only for filesystem I/O failures, not for network or HTTP errors.
+fn cache_error_context(cache_dir: &Path, err: &ApiError) -> String {
+    let dir = cache_dir.display();
+    match err {
+        ApiError::IoError(_) | ApiError::LockAcquisition(_) => {
+            format!("HF cache dir {dir}; {CACHE_OVERRIDE_HINT}")
+        }
+        _ => format!("HF cache dir {dir}"),
     }
-    let Some(rest) = endpoint.strip_prefix("http://") else {
-        return false;
-    };
-    // The authority ends at the first path, query, or fragment delimiter. Any `@` is
-    // userinfo: `localhost:80@evil.example` has host `evil.example`, so reject it outright.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return false;
-    }
-    let host = authority.split(':').next().unwrap_or("");
-    matches!(host, "localhost" | "127.0.0.1")
 }
 
 /// Internal function that performs the actual download.
@@ -129,16 +110,11 @@ fn do_download() -> crate::Result<PathBuf> {
     let api = api_for_cache(&cache_dir)?;
 
     let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
-    // Every download failure names the cache dir and the override, since a read-only or
-    // unwritable cache surfaces here as an io error from `repo.get`.
-    let cache_context = format!(
-        "HF cache dir {}; {CACHE_OVERRIDE_HINT}",
-        cache_dir.display()
-    );
     let fetch = |artifact: &str| {
         repo.get(artifact).map_err(|e| {
             crate::LievoError::RetrievalError(format!(
-                "failed to download {MODEL_ID} {artifact}: {e} ({cache_context})"
+                "failed to download {MODEL_ID} {artifact}: {e} ({})",
+                cache_error_context(&cache_dir, &e)
             ))
         })
     };
@@ -155,16 +131,38 @@ fn do_download() -> crate::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// Directory containing the downloaded model snapshot (the parent of the
-/// tokenizer artefact in the HuggingFace hub cache). Reads only the on-disk cache:
-/// it never downloads and never touches the network, so `lievo doctor` can call
-/// it safely. `None` when the model has not been downloaded yet.
-pub fn model_dir() -> Option<PathBuf> {
-    let cache = Cache::new(resolve_hf_cache_dir());
-    let tokenizer = cache
-        .repo(Repo::new(MODEL_ID.to_string(), RepoType::Model))
-        .get("tokenizer.json")?;
-    tokenizer.parent().map(Path::to_path_buf)
+/// Directory containing the downloaded model snapshot, read from the on-disk hub
+/// layout (`refs/<revision>` → `snapshots/<commit>/tokenizer.json`). Never downloads
+/// and never touches the network, so `lievo doctor` can call it safely.
+///
+/// `Ok(None)` means the model is not cached. `Err` means the cache exists but cannot
+/// be read, which must not be reported as "not downloaded". hf-hub's `CacheRepo::get`
+/// collapses every I/O error to `None`, so this reads the files directly.
+pub fn model_dir() -> crate::Result<Option<PathBuf>> {
+    let cache_dir = resolve_hf_cache_dir();
+    let repo = Repo::new(MODEL_ID.to_string(), RepoType::Model);
+    let repo_dir = cache_dir.join(repo.folder_name());
+    let read_err = |path: &Path, e: std::io::Error| {
+        crate::LievoError::RetrievalError(format!(
+            "cannot read HF model cache at {}: {e}",
+            path.display()
+        ))
+    };
+
+    let ref_path = repo_dir.join("refs").join(repo.revision());
+    let commit = match std::fs::read_to_string(&ref_path) {
+        Ok(commit) => commit,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(read_err(&ref_path, e)),
+    };
+
+    let snapshot = repo_dir.join("snapshots").join(commit);
+    let tokenizer = snapshot.join("tokenizer.json");
+    match std::fs::metadata(&tokenizer) {
+        Ok(_) => Ok(Some(snapshot)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(read_err(&tokenizer, e)),
+    }
 }
 
 /// Index-staleness detection for the on-disk vector index.
@@ -195,6 +193,10 @@ pub fn index_staleness_marker_matches(index_path: &Path) -> bool {
     };
     meta.model_id.as_deref() == Some(MODEL_ID)
 }
+
+#[cfg(test)]
+#[path = "model_cache_staleness_tests.rs"]
+mod staleness_tests;
 
 #[cfg(test)]
 mod tests {
@@ -245,6 +247,7 @@ mod tests {
             ("HF_ENDPOINT", None),
         ]);
         assert_eq!(resolve_hf_cache_dir(), Cache::default().path().clone());
+        assert_eq!(resolve_hf_cache_dir(), Cache::from_env().path().clone());
     }
 
     #[test]
@@ -274,6 +277,9 @@ mod tests {
             resolve_hf_cache_dir(),
             PathBuf::from("/nonexistent-lievo-hub-cache")
         );
+        // Deliberate divergence pin: hf-hub 0.5.0's `from_env` ignores HF_HUB_CACHE. If an
+        // hf-hub upgrade starts honouring it, revisit `resolve_hf_cache_dir`.
+        assert_eq!(Cache::from_env().path(), Cache::default().path());
     }
 
     #[test]
@@ -314,21 +320,24 @@ mod tests {
             .to_string();
         assert!(msg.contains("failed to download"), "{msg}");
         assert!(msg.contains(&dir.display().to_string()), "{msg}");
-        assert!(msg.contains("HF_HUB_CACHE"), "{msg}");
+        // A network error is not a filesystem problem, so no override hint.
+        assert!(!msg.contains(CACHE_OVERRIDE_HINT), "{msg}");
     }
 
     #[test]
-    fn endpoint_allows_https_and_loopback_http_only() {
-        assert!(endpoint_is_allowed("https://hf.example.com"));
-        assert!(endpoint_is_allowed("http://127.0.0.1:8080"));
-        assert!(endpoint_is_allowed("http://localhost"));
-        assert!(!endpoint_is_allowed("http://hf.example.com"));
-        assert!(!endpoint_is_allowed("http://localhost.evil.com"));
-        assert!(!endpoint_is_allowed("http://127.0.0.1.evil.com"));
-        assert!(!endpoint_is_allowed("http://localhost:80@evil.example"));
-        assert!(!endpoint_is_allowed("http://127.0.0.1:1@evil.example"));
-        assert!(!endpoint_is_allowed("HTTPS://hf.example.com"));
-        assert!(!endpoint_is_allowed("http://[::1]:8080"));
+    fn cache_error_context_hints_only_for_filesystem_io_errors() {
+        let dir = Path::new("/some/hf/cache");
+        let io = ApiError::IoError(std::io::Error::other("read-only"));
+        let lock = ApiError::LockAcquisition(dir.join("x.lock"));
+        let other = ApiError::InvalidResume;
+        for err in [&io, &lock] {
+            let ctx = cache_error_context(dir, err);
+            assert!(ctx.contains("/some/hf/cache"), "{ctx}");
+            assert!(ctx.contains(CACHE_OVERRIDE_HINT), "{ctx}");
+        }
+        let ctx = cache_error_context(dir, &other);
+        assert!(ctx.contains("/some/hf/cache"), "{ctx}");
+        assert!(!ctx.contains(CACHE_OVERRIDE_HINT), "{ctx}");
     }
 
     #[test]
@@ -356,17 +365,15 @@ mod tests {
     }
 
     #[test]
-    fn api_for_cache_rejects_plain_http_endpoint() {
+    fn api_for_cache_accepts_any_hf_endpoint_like_hf_hub() {
+        // hf-hub does not validate HF_ENDPOINT, so neither do we: a plain-http mirror builds.
         let tmp = tempfile::tempdir().expect("tempdir");
         let _guard = HfEnvGuard::set(&[
             ("HF_HOME", None),
             ("HF_HUB_CACHE", None),
             ("HF_ENDPOINT", Some("http://mirror.example.com")),
         ]);
-        let msg = api_for_cache(tmp.path())
-            .expect_err("plain http endpoint must be rejected")
-            .to_string();
-        assert!(msg.contains("HF_ENDPOINT"), "{msg}");
+        assert!(api_for_cache(tmp.path()).is_ok());
     }
 
     #[test]
@@ -380,7 +387,7 @@ mod tests {
             ),
             ("HF_ENDPOINT", Some("http://127.0.0.1:1")),
         ]);
-        assert_eq!(model_dir(), None);
+        assert_eq!(model_dir().expect("empty cache is readable"), None);
 
         let repo = root.path().join("models--minishlab--potion-code-16M-v2");
         std::fs::create_dir_all(repo.join("refs")).expect("create refs");
@@ -388,7 +395,32 @@ mod tests {
         let snapshot = repo.join("snapshots/abc123");
         std::fs::create_dir_all(&snapshot).expect("create snapshot");
         std::fs::write(snapshot.join("tokenizer.json"), "{}").expect("write tokenizer");
-        assert_eq!(model_dir(), Some(snapshot));
+        assert_eq!(
+            model_dir().expect("cached model is readable"),
+            Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn model_dir_reports_unreadable_cache_as_error_not_absent() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let _guard = HfEnvGuard::set(&[
+            ("HF_HOME", None),
+            (
+                "HF_HUB_CACHE",
+                Some(root.path().to_str().expect("utf-8 temp dir")),
+            ),
+            ("HF_ENDPOINT", None),
+        ]);
+        // `refs/main` is a directory, so reading it fails with a real I/O error.
+        let ref_dir = root
+            .path()
+            .join("models--minishlab--potion-code-16M-v2/refs/main");
+        std::fs::create_dir_all(&ref_dir).expect("create ref dir");
+        let msg = model_dir()
+            .expect_err("unreadable ref must not be reported as not downloaded")
+            .to_string();
+        assert!(msg.contains(&ref_dir.display().to_string()), "{msg}");
     }
 
     #[test]
@@ -412,80 +444,5 @@ mod tests {
                 eprintln!("Network test skipped (no network): {}", e);
             }
         }
-    }
-
-    // ----------------------------------------------------------------------
-    // Staleness marker tests (issue #716)
-    // ----------------------------------------------------------------------
-
-    fn staleness_temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("lievo-staleness-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn write_marker_meta(index_path: &std::path::Path, model_id: Option<String>) {
-        let meta = crate::retrieval::usearch_searcher::IndexMeta {
-            model_id,
-            vectors: std::collections::HashMap::new(),
-        };
-        let meta_path = index_path.with_extension("usearch.meta.json");
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).expect("write meta");
-    }
-
-    #[test]
-    fn staleness_no_index_artifact_is_not_stale() {
-        // (a) No meta artefact present (no index yet) => not stale.
-        let dir = staleness_temp_dir("none");
-        let index_path = dir.join("vectors.usearch");
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_matching_marker_is_fresh() {
-        // (b) Marker equals current MODEL_ID => fresh (not stale).
-        let dir = staleness_temp_dir("fresh");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, Some(MODEL_ID.to_string()));
-        assert!(index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_mismatched_marker_is_stale() {
-        // (c) Marker differs from current MODEL_ID (old model) => stale.
-        let dir = staleness_temp_dir("stale-mismatch");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, Some("minishlab/potion-code-16M".to_string()));
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_missing_marker_legacy_is_stale() {
-        // (d) Meta exists but has no `model_id` field (pre-swap legacy) => stale.
-        let dir = staleness_temp_dir("stale-legacy");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        write_marker_meta(&index_path, None);
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn staleness_corrupt_meta_is_stale() {
-        // Defensive: unparseable meta JSON is treated as stale rather than
-        // silently trusted — a rebuild is the safe recovery.
-        let dir = staleness_temp_dir("stale-corrupt");
-        let index_path = dir.join("vectors.usearch");
-        std::fs::write(&index_path, b"not a real usearch index").expect("write stub");
-        let meta_path = index_path.with_extension("usearch.meta.json");
-        std::fs::write(&meta_path, b"not valid json").expect("write meta");
-        assert!(!index_staleness_marker_matches(&index_path));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

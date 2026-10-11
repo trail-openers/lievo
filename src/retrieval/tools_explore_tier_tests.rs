@@ -655,6 +655,7 @@ fn width_cap_binds_before_symbol_building_no_payload_for_cut_files() {
 
 #[test]
 fn same_query_same_index_produces_byte_identical_json() {
+    let _env_lock = crate::test_env_support::env_lock();
     let build = |_seed: u8| -> String {
         let (storage, project_id, repo_id) = setup();
         let tmp = tempfile::tempdir().unwrap();
