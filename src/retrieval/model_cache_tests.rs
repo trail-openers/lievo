@@ -224,6 +224,47 @@ fn model_dir_trims_ref_trailing_newline() {
     assert_eq!(model_dir().expect("readable"), Some(snapshot));
 }
 
+#[cfg(unix)]
+#[test]
+fn api_for_cache_rejects_non_utf8_hf_endpoint() {
+    use std::os::unix::ffi::OsStringExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _guard = HfEnvGuard::set(&[
+        ("HF_HOME", None),
+        ("HF_HUB_CACHE", None),
+        ("HF_ENDPOINT", None),
+    ]);
+    unsafe {
+        std::env::set_var(
+            "HF_ENDPOINT",
+            std::ffi::OsString::from_vec(vec![b'h', 0xff]),
+        );
+    }
+    let Err(err) = api_for_cache(tmp.path()) else {
+        panic!("non-UTF-8 HF_ENDPOINT must be rejected");
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("HF_ENDPOINT is not valid UTF-8"), "{msg}");
+    assert!(!msg.contains('\u{fffd}'), "{msg}");
+}
+
+#[test]
+fn model_dir_treats_blank_ref_as_not_cached() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let _guard = HfEnvGuard::set(&[
+        ("HF_HOME", None),
+        (
+            "HF_HUB_CACHE",
+            Some(root.path().to_str().expect("utf-8 temp dir")),
+        ),
+        ("HF_ENDPOINT", None),
+    ]);
+    let repo = root.path().join("models--minishlab--potion-code-16M-v2");
+    std::fs::create_dir_all(repo.join("refs")).expect("create refs");
+    std::fs::write(repo.join("refs/main"), " \n").expect("write ref");
+    assert_eq!(model_dir().expect("blank ref is readable"), None);
+}
+
 #[test]
 fn model_dir_rejects_ref_that_is_not_a_commit_id() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -242,7 +283,14 @@ fn model_dir_rejects_ref_that_is_not_a_commit_id() {
     let escaped = repo.join("x");
     std::fs::create_dir_all(&escaped).expect("create escaped dir");
     std::fs::write(escaped.join("tokenizer.json"), "{}").expect("write tokenizer");
-    assert_eq!(model_dir().expect("readable"), None);
+    let msg = model_dir()
+        .expect_err("malformed ref must be reported")
+        .to_string();
+    assert!(msg.contains("invalid ref in HF cache at"), "{msg}");
+    assert!(
+        msg.contains(&repo.join("refs/main").display().to_string()),
+        "{msg}"
+    );
 }
 
 #[test]

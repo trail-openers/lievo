@@ -86,7 +86,10 @@ fn api_for_cache(cache_dir: &Path) -> crate::Result<Api> {
     // Token follows HF_HOME (or the default cache), not `cache_dir`, as `from_env` does.
     let mut builder = ApiBuilder::from_cache(Cache::new(cache_dir.to_path_buf()))
         .with_token(token_cache().token());
-    if let Some(endpoint) = std::env::var("HF_ENDPOINT").ok().filter(|e| !e.is_empty()) {
+    if let Some(endpoint) = non_empty_env("HF_ENDPOINT") {
+        let endpoint = endpoint.into_string().map_err(|_| {
+            crate::LievoError::RetrievalError("HF_ENDPOINT is not valid UTF-8".into())
+        })?;
         builder = builder.with_endpoint(endpoint);
     }
     builder.build().map_err(|e| {
@@ -139,7 +142,9 @@ fn do_download() -> crate::Result<PathBuf> {
 /// layout (`refs/<revision>` → `snapshots/<commit>/tokenizer.json`). Never downloads
 /// and never touches the network, so `lievo doctor` can call it safely.
 ///
-/// `Ok(None)` means the model is not cached (or its ref is not a plain commit id).
+/// `Ok(None)` means the model is not cached (missing or empty ref).
+/// `Err` also covers a non-empty ref that is not a plain commit id, since that is a
+/// malformed cache rather than an absent model.
 /// `Err` means the cache exists but cannot be read, which must not be reported as
 /// "not downloaded". hf-hub's `CacheRepo::get` collapses every I/O error to `None`,
 /// so this reads the files directly.
@@ -160,9 +165,15 @@ pub fn model_dir() -> crate::Result<Option<PathBuf>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(read_err(&ref_path, e)),
     };
+    if commit.is_empty() {
+        return Ok(None);
+    }
     // The ref is joined into a path, so only a plain hex commit id may be used.
     if !is_plain_commit_id(&commit) {
-        return Ok(None);
+        return Err(crate::LievoError::RetrievalError(format!(
+            "invalid ref in HF cache at {}",
+            ref_path.display()
+        )));
     }
 
     let snapshot = repo_dir.join("snapshots").join(commit);
