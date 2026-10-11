@@ -66,12 +66,13 @@ Capped at 1MB. Can be ignored in normal use.
 
 ## Disk Layout Summary
 
-All lievo data lives under `~/.lievo/`:
+Lievo's own data lives under `~/.lievo/`, with one exception: the embedding model weights live in the Hugging Face hub cache (see Semantic Search Index).
 
 | Path | Purpose |
 |------|---------|
 | `~/.lievo/lievo.db` | SQLite database (entities, relationships, insights) |
 | `~/.lievo/indices/{repo-hash}/ts-index/` | Semantic search index (per repository) |
+| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights, shared with other Hugging Face tools |
 | `~/.lievo/debug-import-resolution.log` | Debug log (optional) |
 | `<repo>/.lievo/config.yaml` | Per-repository configuration (optional) |
 
