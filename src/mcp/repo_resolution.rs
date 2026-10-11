@@ -12,8 +12,9 @@
 //!
 //! The lookup order is: path match → live same-identity twin (register a
 //! distinct `<repo>@<dir>` project) → fresh registration. A same-identity repo
-//! whose stored path has vanished falls through to fresh registration until
-//! move handling from issue #30 lands. See `crate::registration::register`.
+//! whose stored path has vanished is re-keyed to the new path (issue #30), or
+//! falls through to fresh registration when the move cannot be done safely.
+//! See `crate::registration::register`.
 
 use std::path::{Path, PathBuf};
 

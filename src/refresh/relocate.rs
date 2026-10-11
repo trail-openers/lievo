@@ -50,12 +50,9 @@ pub enum SkipReason {
     ProjectMissing,
     /// The stored index path is not under the old index directory.
     IndexOutsideIndexDir,
-    /// A rename or the row update failed. `unrestored` lists renames that
-    /// could not be undone, so those files are left at the new location.
-    Move {
-        cause: String,
-        unrestored: Vec<String>,
-    },
+    /// A rename or the row update failed. `split` lists renames that could
+    /// not be undone: those files stay at `to` instead of `from`.
+    Move { cause: String, split: Vec<Rename> },
 }
 
 impl fmt::Display for SkipReason {
@@ -70,14 +67,7 @@ impl fmt::Display for SkipReason {
             Self::IndexOutsideIndexDir => {
                 f.write_str("its stored index path is outside its index directory")
             }
-            Self::Move { cause, unrestored } if unrestored.is_empty() => {
-                write!(f, "the move failed: {cause}")
-            }
-            Self::Move { cause, unrestored } => write!(
-                f,
-                "the move failed: {cause}; could not restore, files left at the new location: {}",
-                unrestored.join(", ")
-            ),
+            Self::Move { cause, .. } => write!(f, "the move failed: {cause}"),
         }
     }
 }
@@ -85,22 +75,26 @@ impl fmt::Display for SkipReason {
 /// The result of [`relocate_checkout`].
 #[derive(Debug)]
 pub enum RelocateOutcome {
-    /// The row now points at the new path.
+    /// The row now points at the new path. The move is committed, so this is
+    /// a success even when `notice` is set.
     Moved {
-        /// The row as written. Its `updated_at` is the value read before the
-        /// update, so reload the row if the stored timestamp matters.
+        /// The row as stored after the move. If reading it back failed, this
+        /// is the row as written, and `notice` says so.
         repo: Box<Repository>,
         /// The row's project, checked before the commit point.
         project: Box<Project>,
+        /// A secondary problem after the commit, for the caller to report.
+        notice: Option<String>,
     },
     /// Relocation was not done; the caller registers fresh.
     Skipped(SkipReason),
 }
 
-/// A completed rename, kept so it can be undone if a later step fails.
-struct Rename {
-    from: PathBuf,
-    to: PathBuf,
+/// A rename, kept so it can be undone if a later step fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    pub from: PathBuf,
+    pub to: PathBuf,
 }
 
 /// The hashes and paths a relocation derives from the old and new checkouts.
@@ -163,16 +157,13 @@ fn move_if_present(done: &mut Vec<Rename>, from: PathBuf, to: PathBuf) -> io::Re
     Ok(())
 }
 
-/// Undo completed renames, newest first. Returns the undo failures; those
-/// files stay at the new location.
-fn roll_back(done: &[Rename]) -> Vec<String> {
+/// Undo completed renames, newest first. Returns the renames that could not be
+/// undone; each stays at `to`.
+fn roll_back(done: &[Rename]) -> Vec<Rename> {
     done.iter()
         .rev()
-        .filter_map(|r| {
-            fs::rename(&r.to, &r.from)
-                .err()
-                .map(|e| format!("'{}' ({e})", r.to.display()))
-        })
+        .filter(|r| fs::rename(&r.to, &r.from).is_err())
+        .cloned()
         .collect()
 }
 
@@ -283,18 +274,40 @@ fn relocate_in(
     // Release the lock. It stays on disk (see module docs).
     drop(lock);
     match result {
-        Ok(()) => Ok(RelocateOutcome::Moved {
-            repo: Box::new(Repository {
+        Ok(()) => {
+            let fallback = Repository {
                 local_path: plan.new_path,
                 index_path,
                 ..current
-            }),
-            project: Box::new(project),
-        }),
+            };
+            let (row, notice) = after_commit(|| storage.get_repo(&repo.id), fallback);
+            Ok(RelocateOutcome::Moved {
+                repo: Box::new(row),
+                project: Box::new(project),
+                notice,
+            })
+        }
         Err(cause) => Ok(RelocateOutcome::Skipped(SkipReason::Move {
             cause,
-            unrestored: roll_back(&done),
+            split: roll_back(&done),
         })),
+    }
+}
+
+/// Resolve the row after the commit point. The move is already durable, so a
+/// failed read-back cannot undo it: the row built in memory is returned and the
+/// failure is reported as a notice.
+fn after_commit(
+    reload: impl FnOnce() -> crate::Result<Option<Repository>>,
+    fallback: Repository,
+) -> (Repository, Option<String>) {
+    match reload() {
+        Ok(Some(row)) => (row, None),
+        Ok(None) => (
+            fallback,
+            Some("the repo row was not found after the move".to_string()),
+        ),
+        Err(e) => (fallback, Some(format!("reading the repo row failed: {e}"))),
     }
 }
 

@@ -3,6 +3,7 @@
 use super::*;
 use crate::extraction::lievo_data_dir;
 use crate::layout::{lock_path_for_hash, repo_hash, status_path_for_hash};
+use crate::model::{Entity, EntityTier};
 use crate::refresh::lock::open_lock_file;
 use crate::registration::{RegistrationRequest, register};
 use crate::storage::Storage;
@@ -94,6 +95,22 @@ fn successful_move_rekeys_row_and_index_without_reindex() {
     let base = TempDir::new().unwrap();
     let base = base.path().canonicalize().unwrap();
     let f = fixture(&base, base.join("data"), true);
+    let entity = Entity {
+        id: format!("{}:old-checkout:file:src/lib.rs", f.project_id),
+        project_id: f.project_id.clone(),
+        repo_id: Some(f.repo.id.clone()),
+        tier: EntityTier::File,
+        parent_id: None,
+        name: "lib.rs".to_string(),
+        path: Some("src/lib.rs".to_string()),
+        language: Some("rust".to_string()),
+        summary: None,
+        summary_commit: None,
+        metrics_json: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    f.storage.upsert_entity(&entity).unwrap();
 
     let outcome = relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap();
     let moved = moved(outcome);
@@ -115,6 +132,15 @@ fn successful_move_rekeys_row_and_index_without_reindex() {
     // No reindex: the analyzed commit and project survive the move.
     assert_eq!(moved.last_analyzed_commit.as_deref(), Some("abc123"));
     assert_eq!(f.storage.list_projects().unwrap().len(), 1);
+    // Entity ids are not rewritten: the same entity still belongs to the repo.
+    let kept = f
+        .storage
+        .get_entity(&entity.id)
+        .unwrap()
+        .expect("entity kept");
+    assert_eq!(kept.repo_id, entity.repo_id);
+    assert_eq!(kept.path, entity.path);
+    assert_eq!(f.storage.count_entities(&f.repo.id).unwrap(), 1);
     // The new path's lock is free right away.
     let new_lock = open_lock(&f.data, &new_hash);
     assert!(new_lock.try_lock().is_ok());
@@ -167,7 +193,7 @@ fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
 
     let reason = skipped(relocate_in(&f.storage, &f.repo, &f.new_root, &f.data).unwrap());
 
-    assert!(matches!(reason, SkipReason::Move { ref unrestored, .. } if unrestored.is_empty()));
+    assert!(matches!(reason, SkipReason::Move { ref split, .. } if split.is_empty()));
     assert!(
         f.data
             .join("indices")
@@ -187,6 +213,54 @@ fn failed_rename_rolls_back_completed_moves_and_keeps_row() {
     assert_eq!(row.index_path, f.repo.index_path);
     // The old lock is released: it can be taken again.
     assert!(open_lock(&f.data, &f.old_hash).try_lock().is_ok());
+}
+
+#[test]
+fn roll_back_reports_only_renames_it_could_not_undo() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let undone_from = base.join("a");
+    let undone_to = base.join("a-new");
+    let stuck_from = base.join("b");
+    let stuck_to = base.join("b-new");
+    fs::write(&undone_to, b"x").unwrap();
+    // `stuck_to` never existed, so its undo fails and it must be reported.
+    let done = vec![
+        Rename {
+            from: undone_from.clone(),
+            to: undone_to.clone(),
+        },
+        Rename {
+            from: stuck_from.clone(),
+            to: stuck_to.clone(),
+        },
+    ];
+
+    let split = roll_back(&done);
+
+    assert_eq!(split.len(), 1);
+    assert_eq!(split[0].from, stuck_from);
+    assert_eq!(split[0].to, stuck_to);
+    assert!(undone_from.exists(), "the undoable rename is restored");
+    assert!(!undone_to.exists());
+}
+
+#[test]
+fn after_commit_read_failure_keeps_the_move_and_reports_a_notice() {
+    let base = TempDir::new().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let f = fixture(&base, base.join("data"), true);
+
+    let (row, notice) = after_commit(
+        || Err(crate::LievoError::InvalidInput("read failed".to_string())),
+        f.repo.clone(),
+    );
+
+    assert_eq!(row.id, f.repo.id, "the in-memory row is returned");
+    assert!(notice.unwrap().contains("read failed"));
+    let (row, notice) = after_commit(|| Ok(Some(f.repo.clone())), f.repo.clone());
+    assert_eq!(row.id, f.repo.id);
+    assert!(notice.is_none());
 }
 
 #[test]

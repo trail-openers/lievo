@@ -193,7 +193,19 @@ pub fn register(
         // identity never drives a move (see the trust note above).
         if !identity_from_override && let Some(vanished) = matches.first() {
             match relocate_checkout(storage, vanished, request.repo_root)? {
-                RelocateOutcome::Moved { repo, project } => {
+                RelocateOutcome::Moved {
+                    repo,
+                    project,
+                    notice,
+                } => {
+                    if let Some(notice) = notice {
+                        eprintln!(
+                            "checkout '{}' moved to '{}', but: {}",
+                            sanitize(&vanished.local_path),
+                            sanitize(repo_root_str),
+                            sanitize(&notice),
+                        );
+                    }
                     return Ok(ResolvedRepo {
                         project: *project,
                         repo: *repo,
@@ -226,6 +238,11 @@ pub fn register(
 /// Print the notice for a relocation that was skipped. The caller then
 /// registers the new path as a fresh project.
 fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
+    if let SkipReason::Move { split, .. } = reason {
+        for r in split {
+            eprintln!("{}", split_notice(old_path, &r.from, &r.to));
+        }
+    }
     eprintln!(
         "checkout '{}' appears to have moved to '{}', but it could not be re-keyed ({}); registering '{}' as a new project",
         sanitize(old_path),
@@ -233,6 +250,18 @@ fn report_skipped_move(old_path: &str, new_path: &str, reason: &SkipReason) {
         sanitize(&reason.to_string()),
         sanitize(new_path),
     );
+}
+
+/// The notice for index files that a failed rollback left at `to` instead of
+/// `from`. The row still names `old_path`, so the user must put them back or
+/// remove them before that checkout's index is usable again.
+fn split_notice(old_path: &str, from: &Path, to: &Path) -> String {
+    let old_path = sanitize(old_path);
+    let from = sanitize(&from.to_string_lossy());
+    let to = sanitize(&to.to_string_lossy());
+    format!(
+        "warning: index state for '{old_path}' is split: '{to}' could not be moved back to '{from}'. To recover, rename '{to}' back to '{from}', or remove '{to}' and reindex '{old_path}'."
+    )
 }
 
 /// Strip control characters from a value that will be interpolated into a
