@@ -1,13 +1,14 @@
 // Repository identity: deriving a stable identity key from a repository's
 // origin remote URL (issue #28, sub-issue 1 of epic #24).
 //
-// The identity key is `host/owner/repo` with a lowercase host, no
+// The identity key is `host/owner/repo`, fully lowercase, no
 // credentials, no user, no `.git` suffix and no explicit standard port.
 // Every spelling of the same remote (SSH, HTTPS, git://, ssh://, scp-like)
 // normalizes to the same key. Unparseable or unknown-scheme URLs yield
 // `None`, and the caller falls back to the canonical path.
 
 use crate::config::RepoConfig;
+use crate::identity_key::is_valid_identity_key;
 
 /// Schemes we can key on. Any other scheme (ftp, telnet, ...) or a
 /// missing/unknown shape yields `None` so the caller falls back to the
@@ -45,12 +46,20 @@ fn has_forbidden_segment(path: &str) -> bool {
 
 /// Normalize a git origin remote URL into an identity key.
 ///
-/// Returns `Some("host/owner/repo")` — lowercase host, no `.git` suffix, no
-/// credentials, no user, no explicit standard port — or `None` when the URL
-/// is unparseable, uses an unsupported scheme, or lacks an owner/repo shape.
+/// Returns `Some("host/owner/repo")` — fully lowercase, no `.git` suffix, no credentials,
+/// no user, no explicit standard port — or `None` when the URL is unparseable, uses an
+/// unsupported scheme, contains a control character, or lacks an owner/repo shape.
 pub fn normalize_origin_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
+        return None;
+    }
+    // Control characters (ANSI escapes, embedded newlines, NUL, ...) must never
+    // survive into an identity key: they would render raw in terminal output or
+    // corrupt downstream parsing. Checked after trimming, so only a leading or
+    // trailing whitespace run is removed and an embedded control char is still
+    // rejected.
+    if url.chars().any(|c| c.is_control()) {
         return None;
     }
 
@@ -106,7 +115,15 @@ pub fn normalize_origin_url(url: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("{key_host}/{repo_path}"))
+    // Length bound (issue #29): a key longer than `MAX_KEY_LEN` bytes is not
+    // a real remote shape — reject it so an adversarial remote URL cannot
+    // persist or print an unbounded identity key.
+    let key = format!("{key_host}/{repo_path}").to_ascii_lowercase();
+    if !is_valid_identity_key(&key) {
+        return None;
+    }
+
+    Some(key)
 }
 
 /// Derive a repository's identity key.
@@ -127,8 +144,12 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
         let key = override_key.trim();
         // Defensive: a stored override with a traversal or empty segment
         // must never become an identity key, even though `validate()`
-        // rejects such values at config load.
-        if has_forbidden_segment(key) {
+        // rejects such values at config load. Control characters are
+        // rejected at the same boundary (they must not reach storage or
+        // terminal output).
+        // Length and control-character bounds (issue #29) are shared with
+        // `normalize_origin_url` and `RepoConfig::validate`.
+        if has_forbidden_segment(key) || !is_valid_identity_key(key) {
             return None;
         }
         return Some(key.to_ascii_lowercase());
@@ -146,11 +167,14 @@ pub fn derive_identity(repo_path: &std::path::Path, config: &RepoConfig) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity_key::MAX_KEY_LEN;
     use std::path::Path;
     use tempfile::TempDir;
 
     /// Table-driven cases: every URL form in the issue's edge-case list must
-    /// collapse to the same key `github.com/owner/repo`.
+    /// collapse to the same key `github.com/owner/repo`. Leading and trailing
+    /// whitespace (including a newline) is trimmed before the control-character
+    /// check.
     #[test]
     fn test_normalize_origin_url_all_spellings_collapse_to_one_key() {
         let expected = "github.com/owner/repo";
@@ -178,6 +202,9 @@ mod tests {
             "git@GitHub.com:owner/repo",
             // trailing slash variants
             "ssh://git@github.com/owner/repo/",
+            // trailing whitespace and newlines are trimmed
+            "https://github.com/owner/repo ",
+            "https://github.com/owner/repo\n",
         ];
 
         for url in &cases {
@@ -188,6 +215,15 @@ mod tests {
                 "URL {url} should normalize to {expected}, got {key}"
             );
         }
+    }
+
+    #[test]
+    fn test_origin_and_override_mixed_case_collapse_to_same_key() {
+        let tmp = TempDir::new().unwrap();
+        let _ = make_repo_with_remote(tmp.path(), "git@github.com:Owner/Repo.git");
+        let config = default_config_with_identity("github.com/owner/repo");
+        let origin = derive_identity(tmp.path(), &RepoConfig::default());
+        assert_eq!(origin, derive_identity(tmp.path(), &config));
     }
 
     #[test]
@@ -282,6 +318,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_normalize_origin_url_contains_control_chars_returns_none() {
+        // Control characters (ANSI escapes, newlines, NUL) in a remote URL
+        // must never leak into an identity key.
+        for url in [
+            "git@github.com:owner/repo\u{001b}[31m",
+            "https://github.com/owner/re\npo",
+            "https://github.com/owner/\u{0}/repo",
+            "ssh://github.com/owner\t/repo",
+        ] {
+            assert!(
+                normalize_origin_url(url).is_none(),
+                "URL with control characters must normalize to None"
+            );
+        }
+    }
+
     // --- derive_identity ---
 
     /// Build a tempdir git repo with an origin remote set to `url`.
@@ -338,6 +391,74 @@ mod tests {
         // directly) with a traversal segment must not become a key.
         let tmp = TempDir::new().unwrap();
         let config = default_config_with_identity("github.com/../evil/repo");
+        let identity = derive_identity(tmp.path(), &config);
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn test_identity_override_trailing_newline_validates_and_derives_trimmed() {
+        // A YAML block scalar (`identity: |`) yields a trailing newline. Validation
+        // and derivation both trim first, so they must agree on the same key.
+        let config = default_config_with_identity("github.com/owner/repo\n");
+        assert!(config.validate().is_ok());
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            derive_identity(tmp.path(), &config).as_deref(),
+            Some("github.com/owner/repo")
+        );
+    }
+
+    #[test]
+    fn test_derive_identity_override_with_control_chars_returns_none() {
+        // Defensive: an override carrying control characters must not become
+        // an identity key, matching `RepoConfig::validate`'s rejection.
+        let tmp = TempDir::new().unwrap();
+        let config = default_config_with_identity("github.com/owner/\u{001b}[31mrepo");
+        let identity = derive_identity(tmp.path(), &config);
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn test_normalize_origin_url_key_longer_than_512_bytes_returns_none() {
+        // A path whose `host/owner/repo` key exceeds 512 bytes must be
+        // rejected (issue #29: identity keys are length-bounded).
+        let long_segment = "a".repeat(700);
+        let url = format!("git@github.com:owner/{long_segment}");
+        assert_eq!(
+            normalize_origin_url(&url),
+            None,
+            "keys longer than 512 bytes must normalize to None"
+        );
+        // 512 bytes or under is still accepted.
+        let short_segment = "a".repeat(400);
+        let url = format!("git@github.com:owner/{short_segment}");
+        assert_eq!(
+            normalize_origin_url(&url).as_deref(),
+            Some(format!("github.com/owner/{short_segment}").as_str()),
+            "a key within the 512-byte bound must still normalize"
+        );
+    }
+
+    #[test]
+    fn test_normalize_origin_url_key_bound_is_exact_on_final_string() {
+        // `github.com/owner/` is 17 bytes, so a 495-byte segment yields a
+        // 512-byte key (accepted) and 496 bytes yields 513 (rejected).
+        let at_bound = "a".repeat(495);
+        let key = normalize_origin_url(&format!("git@github.com:owner/{at_bound}")).unwrap();
+        assert_eq!(key.len(), MAX_KEY_LEN);
+        let over_bound = "a".repeat(496);
+        assert_eq!(
+            normalize_origin_url(&format!("git@github.com:owner/{over_bound}")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_derive_identity_override_longer_than_512_bytes_returns_none() {
+        // A config override above 512 bytes is rejected (issue #29), matching
+        // `RepoConfig::validate`'s rejection at config load.
+        let tmp = TempDir::new().unwrap();
+        let config = default_config_with_identity(&"a".repeat(700));
         let identity = derive_identity(tmp.path(), &config);
         assert!(identity.is_none());
     }

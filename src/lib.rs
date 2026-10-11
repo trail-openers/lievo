@@ -13,6 +13,8 @@ mod config_tests;
 pub mod error;
 /// Repository identity: normalized origin-remote identity keys and the `identity:` override (issue #28).
 pub mod identity;
+/// Identity-key length and character bounds, shared by `config` and `identity` (a leaf module).
+pub(crate) mod identity_key;
 pub use error::{LievoError, Result};
 /// Top-level Lievo facade: composes the SQLite storage into a single thread-safe entry point.
 pub mod api;
@@ -28,6 +30,8 @@ pub mod output;
 pub mod project_resolution;
 /// Query API: entity lookup, dependency traversal, and impact analysis.
 pub mod query;
+/// Shared repository registration entry point (issue #29): one `register` used by both MCP and CLI.
+pub mod registration;
 
 /// Single process-wide lock for every in-crate test that mutates or reads
 /// environment variables (issue #863). `std::env::set_var` is process-global

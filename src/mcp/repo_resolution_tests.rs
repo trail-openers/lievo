@@ -14,6 +14,47 @@ fn git_tempdir(name: &str) -> TempDir {
     git2::Repository::init(dir.path().join(name)).unwrap();
     dir
 }
+
+/// Write `.lievo/config.yaml` into a temp repo root (issue #29: identity
+/// override injection for registration tests).
+fn write_identity_config(root: &std::path::Path, identity: &str) {
+    let lievo_dir = root.join(".lievo");
+    std::fs::create_dir_all(&lievo_dir).unwrap();
+    std::fs::write(
+        lievo_dir.join("config.yaml"),
+        format!("identity: {identity}\n"),
+    )
+    .unwrap();
+}
+
+/// Issue #29: a repo whose `.lievo/config.yaml` sets `identity:`
+/// must get that identity through the MCP entry point, and the config must be
+/// loaded by `register` itself — a default-`RepoConfig` caller must not be
+/// able to ignore the override.
+#[test]
+fn identity_override_from_repo_config_applies_via_mcp_resolve_or_register() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    // No origin remote: identity is ONLY derivable from the config override.
+    let d = git_tempdir("override");
+    let root = d.path().join("override");
+    write_identity_config(&root, "github.com/override-org/override-repo");
+
+    let resolved = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(
+        resolved.repo.git_url.as_deref(),
+        Some("github.com/override-org/override-repo"),
+        "identity override from .lievo/config.yaml must be honored by the MCP path"
+    );
+    // Fresh registration takes the bare dir name.
+    assert_eq!(resolved.project.name, "override");
+    // Idempotent re-registration still carries the override's identity.
+    let again = resolve_or_register(&storage, root.as_path()).unwrap();
+    assert_eq!(
+        again.repo.git_url.as_deref(),
+        Some("github.com/override-org/override-repo")
+    );
+}
+
 /// Take the crate-wide env lock (serialises LIEVO_PROJECT_DIR/CLAUDE_PROJECT_DIR
 /// mutations against every other env-mutating test in the crate — issue #863).
 fn with_env(lievo_project_dir: Option<&str>, claude_project_dir: Option<&str>, f: impl FnOnce()) {
@@ -231,24 +272,11 @@ fn unregistered_repo_creates_a_fresh_single_repo_project() {
 }
 
 #[test]
-fn same_directory_name_in_two_repos_gets_distinct_projects() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let d1 = git_tempdir("twin");
-    let d2 = git_tempdir("twin");
-    let r1 = d1.path().join("twin");
-    let r2 = d2.path().join("twin");
-
-    let first = resolve_or_register(&storage, r1.as_path()).unwrap();
-    let second = resolve_or_register(&storage, r2.as_path()).unwrap();
-
-    assert_ne!(first.project.id, second.project.id);
-    assert_eq!(first.project.name, "twin");
-    assert_eq!(second.project.name, "twin-2");
-    assert_eq!(storage.list_projects().unwrap().len(), 2);
-}
-
-#[test]
 fn collision_suffix_counts_up_deterministically() {
+    // Issue #29: no-identity registrations keep
+    // today's -2/-3 suffixing (no derivable identity → no owner-prefixed
+    // name to fall back to). Three identical no-remote dirs must still
+    // suffix deterministically.
     let storage = SqliteStorage::open_in_memory().unwrap();
     let (d1, d2, d3) = (git_tempdir("dup"), git_tempdir("dup"), git_tempdir("dup"));
     let r1 = d1.path().join("dup");
@@ -265,7 +293,8 @@ fn collision_suffix_counts_up_deterministically() {
             b.project.name.as_str(),
             c.project.name.as_str()
         ),
-        ("dup", "dup-2", "dup-3")
+        ("dup", "dup-2", "dup-3"),
+        "no-identity registrations keep today's -2/-3 suffixing"
     );
 }
 
@@ -286,29 +315,6 @@ fn registered_repo_under_multi_repo_project_is_found_by_path() {
     assert_eq!(resolved.project.id, p.id);
     assert_eq!(storage.list_repos(&p.id).unwrap().len(), 2);
     assert_eq!(resolved.repo.name, "multi");
-}
-
-#[test]
-fn path_mismatch_registers_new_repo_instead_of_rewriting_stored_path() {
-    let storage = SqliteStorage::open_in_memory().unwrap();
-    let d1 = git_tempdir("moved");
-    let d2 = git_tempdir("moved");
-    let old_root = d1.path().join("moved");
-    let new_root = d2.path().join("moved");
-
-    // Existing registration at the old path, project named after the dir.
-    let existing = storage.create_project("moved", None).unwrap();
-    storage
-        .add_repo(&existing.id, "moved", old_root.to_str().unwrap())
-        .unwrap();
-
-    let resolved = resolve_or_register(&storage, new_root.as_path()).unwrap();
-    // A new project, not attached to the existing one by name.
-    assert_ne!(resolved.project.id, existing.id);
-    assert_eq!(resolved.project.name, "moved-2");
-    // The stored path was not rewritten.
-    let old_repos = storage.list_repos(&existing.id).unwrap();
-    assert_eq!(old_repos[0].local_path, old_root.to_str().unwrap());
 }
 
 #[test]

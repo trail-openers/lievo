@@ -16,6 +16,52 @@ fn git_dir() -> TempDir {
     dir
 }
 
+/// A tempdir git repo with an origin remote set to `url` (issue #29:
+/// identity-bearing add-repo coverage; the plain `git_dir` helper creates
+/// repos with NO remote, exercising the no-identity path).
+fn git_dir_with_remote(url: &str) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("remote.origin.url", url)
+        .unwrap();
+    dir
+}
+
+/// Write `.lievo/config.yaml` into a temp repo root (issue #29: identity
+/// override injection for registration tests).
+fn write_identity_config(root: &Path, identity: &str) {
+    let lievo_dir = root.join(".lievo");
+    std::fs::create_dir_all(&lievo_dir).unwrap();
+    std::fs::write(
+        lievo_dir.join("config.yaml"),
+        format!("identity: {identity}\n"),
+    )
+    .unwrap();
+}
+
+/// Issue #29: a repo whose `.lievo/config.yaml` sets `identity:`
+/// must get that identity through the CLI `add-repo` path as well, proving
+/// the config is loaded by the shared `register` rather than passed in.
+#[test]
+fn test_add_repo_handler_identity_override_from_repo_config_applies() {
+    let s = storage();
+    // No origin remote: identity is ONLY derivable from the config override.
+    let dir = git_dir();
+    write_identity_config(dir.path(), "github.com/override-org/override-cli");
+
+    add_repo(&s, dir.path(), None).unwrap();
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    let repos = s.list_repos(&projects[0].id).unwrap();
+    assert_eq!(
+        repos[0].git_url.as_deref(),
+        Some("github.com/override-org/override-cli"),
+        "identity override from .lievo/config.yaml must be honored by the CLI path"
+    );
+}
+
 #[test]
 fn test_create_project_handler_succeeds() {
     let s = storage();
@@ -38,6 +84,28 @@ fn test_add_repo_handler_auto_creates_project() {
     add_repo(&s, dir.path(), None).unwrap();
     let projects = s.list_projects().unwrap();
     assert_eq!(projects.len(), 1);
+}
+
+#[test]
+fn test_add_repo_handler_auto_creates_project_identity_bearing() {
+    // Identity-bearing repo: project named after the dir, git_url stamped
+    // (issue #29: shared registration via the MCP path).
+    let s = storage();
+    let dir = git_dir_with_remote("git@github.com:alice/myrepo");
+    add_repo(&s, dir.path(), None).unwrap();
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        projects[0].name,
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    let repos = s.list_repos(&projects[0].id).unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(
+        repos[0].git_url.as_deref(),
+        Some("github.com/alice/myrepo"),
+        "identity-bearing registration must stamp git_url"
+    );
 }
 
 #[test]
@@ -300,6 +368,12 @@ fn test_json_escape_backslash_and_quote() {
 }
 
 #[test]
+fn test_json_escape_control_characters_are_unicode_escaped() {
+    assert_eq!(json_escape("\u{1b}[2J"), "\\u001b[2J");
+    assert_eq!(json_escape("a\nb"), "a\\u000ab");
+}
+
+#[test]
 fn test_delete_existing_project_removes_project() {
     let s = storage();
     create_project(&s, "to-delete").unwrap();
@@ -439,4 +513,185 @@ fn test_delete_repo_command_name_collision() {
     // Both repos should still exist
     let repos = s.list_repos(&proj.id).unwrap();
     assert_eq!(repos.len(), 2);
+}
+
+/// Issue #29: an explicit project name that is taken by a DIFFERENT identity
+/// exits non-zero with an identity-conflict error, distinct from the
+/// idempotent "already registered here" success (issue #29).
+#[test]
+fn test_add_repo_handler_explicit_project_taken_by_different_identity_fails() {
+    use lievo::LievoError;
+    let s = storage();
+    // Create a project with a repo that has a specific identity.
+    let proj = s.create_project("conflict-proj", None).unwrap();
+    let dir1 = git_dir_with_remote("git@github.com:owner-a/repo");
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+    s.set_repo_git_url(&repo1.id, "github.com/owner-a/repo")
+        .unwrap();
+
+    // New repo with a DIFFERENT identity at a different path.
+    let dir2 = git_dir_with_remote("git@github.com:owner-b/other");
+    let result = add_repo(&s, dir2.path(), Some("conflict-proj"));
+    // Must fail with InvalidInput (identity conflict), not succeed.
+    let err =
+        result.expect_err("must fail when explicit project name is taken by a different identity");
+    match err {
+        LievoError::InvalidInput(msg) => {
+            assert!(
+                msg.contains("identity conflict"),
+                "error must mention identity conflict: {msg}"
+            );
+            assert!(
+                msg.contains("conflict-proj"),
+                "error must name the project: {msg}"
+            );
+        }
+        other => panic!("expected InvalidInput, got {:?}", other),
+    }
+
+    // The "already registered here" idempotent success path is distinct:
+    // re-adding the same path under the same project name must succeed.
+    let result_ok = add_repo(&s, dir1.path(), Some("conflict-proj"));
+    assert!(
+        result_ok.is_ok(),
+        "re-adding the same path under the same project must be idempotent"
+    );
+}
+
+/// CLI explicit project name with a NULL-identity existing repo does NOT
+/// conflict (issue #29: a stored NULL `git_url` is not an identity, so it
+/// cannot be "a different identity"). The new path is registered as a SECOND
+/// repo row in the existing project; the original NULL-identity row is left
+/// untouched (no re-keying, no merge).
+#[test]
+fn test_add_repo_handler_explicit_project_null_identity_no_conflict() {
+    let s = storage();
+    // Create a project with a repo that has NULL git_url (no identity).
+    let proj = s.create_project("null-identity-proj", None).unwrap();
+    let dir1 = git_dir();
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+
+    // New repo WITH a derivable identity at a different path. The conflict
+    // check is `git_url.is_some_and(|stored| stored != identity)`. A NULL
+    // stored git_url makes it false, so there is no conflict and the name is
+    // free to attach to.
+    let dir2 = git_dir_with_remote("git@github.com:owner-a/repo");
+
+    // Must succeed: a stored NULL git_url is not "a different identity".
+    add_repo(&s, dir2.path(), Some("null-identity-proj")).unwrap();
+
+    // The new path was registered as a second repo in the EXISTING project
+    // (not a new project, not an attachment to the old row's path).
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1, "must not create a duplicate project");
+    let repos = s.list_repos(&proj.id).unwrap();
+    assert_eq!(
+        repos.len(),
+        2,
+        "the new path must be registered as a second repo in the existing project"
+    );
+    let by_path: std::collections::HashMap<String, _> =
+        repos.iter().map(|r| (r.local_path.clone(), r)).collect();
+    let old = by_path
+        .get(dir1.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("original row at dir1 missing from project repos"));
+    assert_eq!(
+        old.id, repo1.id,
+        "the original row must be untouched (not re-keyed)"
+    );
+    assert_eq!(
+        old.git_url, None,
+        "the original NULL-identity row's git_url must stay NULL (no re-keying)"
+    );
+    let new = by_path
+        .get(dir2.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("new row at dir2 missing from project repos"));
+    assert_eq!(
+        new.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the new row must carry its own derived identity"
+    );
+}
+
+/// Issue #29: an explicit project name whose project already
+/// holds a repo with the SAME identity at a different path must still attach
+/// (the user explicitly asked for that name), adding a second repo row
+/// without touching the original row.
+#[test]
+fn test_add_repo_handler_explicit_project_same_identity_attaches_and_notices() {
+    let s = storage();
+    let proj = s.create_project("same-identity-proj", None).unwrap();
+    let dir1 = git_dir_with_remote("git@github.com:owner-a/repo");
+    let repo1 = s
+        .add_repo(&proj.id, "repo1", dir1.path().to_str().unwrap())
+        .unwrap();
+    s.set_repo_git_url(&repo1.id, "github.com/owner-a/repo")
+        .unwrap();
+
+    // A different checkout of the same identity at a different path, added
+    // explicitly under the existing project's name.
+    let dir2 = git_dir_with_remote("git@github.com:owner-a/repo");
+    add_repo(&s, dir2.path(), Some("same-identity-proj")).unwrap();
+
+    let projects = s.list_projects().unwrap();
+    assert_eq!(projects.len(), 1, "must not create a duplicate project");
+    let repos = s.list_repos(&proj.id).unwrap();
+    assert_eq!(
+        repos.len(),
+        2,
+        "a second repo row must attach to the project"
+    );
+
+    let by_path: std::collections::HashMap<&str, &lievo::model::Repository> =
+        repos.iter().map(|r| (r.local_path.as_str(), r)).collect();
+    let old = by_path
+        .get(dir1.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("original row at dir1 missing from project repos"));
+    assert_eq!(
+        old.id, repo1.id,
+        "the original row must be untouched (id unchanged)"
+    );
+    assert_eq!(old.local_path, dir1.path().to_str().unwrap());
+    assert_eq!(
+        old.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the original row's git_url must be unchanged"
+    );
+    let new = by_path
+        .get(dir2.path().to_str().unwrap())
+        .unwrap_or_else(|| panic!("new row at dir2 missing from project repos"));
+    assert_ne!(new.id, repo1.id);
+    assert_eq!(new.project_id, proj.id);
+    assert_eq!(
+        new.git_url.as_deref(),
+        Some("github.com/owner-a/repo"),
+        "the new row must carry the same identity"
+    );
+}
+
+/// Issue #29: an explicit project name that is empty or
+/// whitespace-only is rejected as invalid input up front.
+#[test]
+fn test_add_repo_handler_explicit_project_empty_name_rejected() {
+    let s = storage();
+    let dir = git_dir();
+    for bad_name in ["", "   ", "\t"] {
+        let result = add_repo(&s, dir.path(), Some(bad_name));
+        match result {
+            Err(lievo::LievoError::InvalidInput(msg)) => assert!(
+                msg.contains("project name"),
+                "error must name the project-name problem: {msg}"
+            ),
+            other => panic!("expected InvalidInput for explicit name {bad_name:?}, got {other:?}"),
+        }
+    }
+    // Nothing must have been persisted by the failed attempts.
+    assert!(
+        s.list_projects().unwrap().is_empty(),
+        "no project may be created"
+    );
 }

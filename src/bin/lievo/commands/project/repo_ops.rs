@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::json_escape;
 use lievo::output::OutputFormat;
+use lievo::registration::{RegistrationRequest, register, sanitize};
 use lievo::storage::Storage;
 use lievo::{LievoError, Result};
 
@@ -26,7 +27,8 @@ pub fn delete_repo(
         _ => {
             return Err(LievoError::InvalidInput(format!(
                 "multiple repos named '{}' in project '{}' — use `lievo list-repos` to find the repo ID",
-                repo_name, project_name
+                sanitize(repo_name),
+                sanitize(project_name)
             )));
         }
     };
@@ -34,7 +36,7 @@ pub fn delete_repo(
     if !force {
         print!(
             "Are you sure you want to delete repository '{}' and all its data? [y/N] ",
-            repo_name
+            sanitize(repo_name)
         );
         use std::io::{self, BufRead, Write};
         io::stdout().flush().map_err(LievoError::Io)?;
@@ -53,7 +55,9 @@ pub fn delete_repo(
     let stats = storage.delete_repo(&repo.id)?;
     println!(
         "Deleted repository '{}' ({} entities, {} relationships removed)",
-        repo_name, stats.entities_deleted, stats.relationships_deleted
+        sanitize(repo_name),
+        stats.entities_deleted,
+        stats.relationships_deleted
     );
     if stats.index_dirs_removed > 0 {
         println!(
@@ -70,7 +74,7 @@ pub fn delete_repo(
 }
 
 pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) -> Result<()> {
-    // Validate path exists and is a git repo.
+    // Validate path exists and is a git repo (bare rejected).
     let canonical = path
         .canonicalize()
         .map_err(|_| LievoError::InvalidRepoPath(path.display().to_string()))?;
@@ -85,29 +89,20 @@ pub fn add_repo(storage: &dyn Storage, path: &Path, project_name: Option<&str>) 
         )));
     }
 
-    // Derive project name: explicit project argument, else directory name.
-    let dir_name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| LievoError::InvalidRepoPath(canonical.display().to_string()))?;
-
-    let effective_project = project_name.unwrap_or(dir_name);
-
-    // Get or auto-create the project.
-    let project = match storage.get_project(effective_project)? {
-        Some(p) => p,
-        None => {
-            let p = storage.create_project(effective_project, None)?;
-            println!("Auto-created project '{}'", p.name);
-            p
-        }
+    // Delegate to the shared registration function (issue #29); it owns the
+    // idempotent path-match fast path (step 1) and the explicit-name
+    // "taken by a different identity" conflict. The repo's own config
+    // (identity override, etc.) is loaded by `register` from the repo root.
+    let request = RegistrationRequest {
+        repo_root: &canonical,
+        project_name,
     };
-
-    let local_path = canonical.to_string_lossy().into_owned();
-    let repo = storage.add_repo(&project.id, dir_name, &local_path)?;
+    let resolved = register(storage, &request)?;
     println!(
         "Registered repository '{}' (id: {}) in project '{}'",
-        repo.name, repo.id, project.name
+        sanitize(&resolved.repo.name),
+        resolved.repo.id,
+        sanitize(&resolved.project.name)
     );
     Ok(())
 }
@@ -137,7 +132,8 @@ pub fn link_repo(
             ),
             OutputFormat::Human => println!(
                 "Repository '{}' is already linked to project '{}'.",
-                repo.name, project.name
+                sanitize(&repo.name),
+                sanitize(&project.name)
             ),
         }
         return Ok(());
@@ -161,7 +157,9 @@ pub fn link_repo(
         ),
         OutputFormat::Human => println!(
             "Moved repository '{}' from project '{}' to project '{}'.",
-            repo.name, old_project_name, project.name
+            sanitize(&repo.name),
+            sanitize(&old_project_name),
+            sanitize(&project.name)
         ),
     }
     Ok(())
@@ -195,7 +193,10 @@ pub fn list_repos(storage: &dyn Storage, project_name: Option<&str>) -> Result<(
             };
             println!(
                 "{:<36}  {:<20}  {:<30}  {}",
-                repo.id, repo.name, project.name, status
+                sanitize(&repo.id),
+                sanitize(&repo.name),
+                sanitize(&project.name),
+                status
             );
         }
     }
