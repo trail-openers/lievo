@@ -189,12 +189,12 @@ When a file exceeds its budget OR has 3+ distinct responsibilities:
 
 ### Conventional Commits
 
-All commits use [Conventional Commits](https://www.conventionalcommits.org/) format:
+All commits use [Conventional Commits](https://www.conventionalcommits.org/) format with **no issue number in the scope**. Keep the scope alphabetic (a numeric scope such as `feat(#123):` is not the project format). Reference the issue at the end of the subject or in a `Closes #123` trailer instead:
 
 ```
-feat(#123): brief description
-fix(#45): brief description
-docs(#78): brief description
+feat: brief description (#123)
+fix: brief description (#45)
+docs: brief description (#78)
 ```
 
 **Commit Types**:
@@ -205,10 +205,11 @@ docs(#78): brief description
 - `test`: Test additions/modifications
 - `perf`: Performance improvements
 - `chore`: Maintenance tasks
+- `ci`: CI configuration
 
 **Example**:
 ```
-feat(#12): add json output format support
+feat: add json output format support
 
 Users can now export analysis results as JSON.
 Adds --json flag to all query commands.
@@ -394,10 +395,10 @@ git push
 
 ### In Commit Messages
 
-Always reference the issue:
+Reference the issue in the body trailer, not the scope:
 
 ```
-feat(#123): add json output support
+feat: add json output support
 
 Closes #123
 ```
@@ -459,7 +460,7 @@ Before EVERY commit, verify:
 
 1. **Every line of code is a liability** — justify necessity before creation
 2. **Quality gates are mandatory** — all checks pass locally before push
-3. **Conventional commits** — feat/fix/docs format with issue numbers
+3. **Conventional commits** — feat/fix/docs format, no issue number in the scope (reference issues in the subject or `Closes #N` trailer)
 4. **Library + CLI + MCP server, async for I/O only** — lib.rs public API + lievo.rs CLI + src/mcp/ MCP server, async/tokio for MCP transport and external integrations, synchronous core analysis
 5. **500-line source file limit** — refactor when files get too large
 6. **Issue-driven work** — all changes match GitHub issue requirements

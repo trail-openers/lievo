@@ -1,6 +1,6 @@
 [package]
 name = "lievo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-only"
@@ -9,6 +9,8 @@ homepage = "https://github.com/trail-openers/lievo"
 keywords = ["codebase", "knowledge", "analysis", "code-intelligence", "mcp"]
 categories = ["command-line-utilities", "database", "development-tools"]
 readme = "README.md"
+# Dev-only files: CI workflows and the design spec are not used by the crate or its targets.
+exclude = [".github/", "docs/spec.md"]
 authors = ["Janni Turunen", "Trail Openers Oy"]
 description = "Code analysis and knowledge platform — analyze codebases, query entity graphs, serve structured knowledge via MCP"
 

@@ -1,0 +1,30 @@
+[workspace]
+# features_always_increment_minor: lievo is a 0.x crate. release-plz's default for
+# 0.x follows Cargo SemVer, where a minor bump signals a BREAKING change and new
+# compatible functionality belongs in patch, so `feat` commits would otherwise produce
+# patch bumps. This project uses the Conventional Commits reading instead, where
+# `feat` bumps minor, because it communicates feature releases more clearly for a CLI.
+# Tradeoff: downstream consumers depending on `^0.1` will NOT automatically receive
+# 0.2, since Cargo treats a 0.x minor bump as breaking. Remove this setting when the
+# crate graduates to 1.0, where feat -> minor is the default anyway.
+features_always_increment_minor = true
+# Generate changelog from conventional commits
+changelog_config = "cliff.toml"
+# Enable changelog updates via release-pr job
+changelog_update = true
+# Path to changelog file
+changelog_path = "./CHANGELOG.md"
+# Publish to crates.io using the CARGO_REGISTRY_TOKEN secret (token-based publishing,
+# NOT trusted publishing/OIDC; see CONTRIBUTING.md "Releasing")
+publish = true
+# release_always = false: publish only when a release-plz release PR (branch `release-plz-*`)
+# is merged, not on every push to main. The default (true) would publish 0.1.0 on the first
+# ordinary merge to main, which fails because the v0.1.0 tag already exists. The first
+# crates.io publish is the 0.2.0 release PR.
+release_always = false
+# Create git tags automatically (the v-tag triggers cargo-dist's release.yml)
+git_tag_enable = true
+# Custom tag name format: v0.2.0 (matches cargo-dist trigger pattern '**[0-9]+.[0-9]+.[0-9]+*')
+git_tag_name = "v{{ version }}"
+# Don't create GitHub releases (cargo-dist handles that from the tag)
+git_release_enable = false

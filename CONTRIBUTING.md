@@ -49,10 +49,11 @@ Use conventional commit format:
 - **refactor**: Code restructuring without behavior change
 - **test**: Test additions or modifications
 - **chore**: Maintenance tasks, dependency updates
+- **ci**: CI configuration
 
-Format: `feat(#123): brief description`
+Format: `feat: brief description (#123)`, or `feat: brief description` with a `Closes #123` trailer in the body.
 
-Always include the issue number after the commit type.
+**Do not put the issue number in the scope** (`feat(#123):` is wrong). Keep the scope alphabetic so the generated `CHANGELOG.md` entries stay readable. Reference the issue at the end of the subject or in the body.
 
 ## Branch Naming
 
@@ -99,9 +100,33 @@ When splitting work from `docs/spec.md` into issues:
 
 ## Releasing
 
-lievo is released as prebuilt binaries via cargo-dist. A release is triggered by a semver tag (e.g. `v0.1.0`) pushed by the operator; cargo-dist only publishes a tag whose version matches the package version in `Cargo.toml`, so the version must be bumped first.
+Releases are automated with [release-plz](https://release-plz.dev) and built by cargo-dist. Never bump the version in `Cargo.toml` or edit `CHANGELOG.md` by hand (the initial 0.2.0 version was set once to bootstrap crates.io publishing).
 
-A release candidate: PR bumping `Cargo.toml` (and `Cargo.lock`) to `X.Y.Z-rc.N`, and the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md` (or regenerate the file, see below) → merge → tag `vX.Y.Z-rc.N` (cargo-dist builds a GitHub pre-release). The final release: PR bumping to `X.Y.Z` and setting the date on the `## [X.Y.Z]` heading in `CHANGELOG.md` → merge → tag `vX.Y.Z`. Note that `releases/latest/download/` installer URLs in the docs only start working once the first non-prerelease is out.
+1. **Merge feature PRs to `main`** with Conventional Commit subjects (see above). Every push to `main` runs the `Release-plz` workflow (`.github/workflows/release-plz.yml`).
+2. **release-plz opens or updates a release PR** (`release-pr` job). It bumps `Cargo.toml` and `Cargo.lock` from the commits since the last tag (`release-plz.toml`: `feat` bumps minor, `fix` bumps patch while the crate is 0.x) and prepends the generated section to `CHANGELOG.md` (git-cliff, `cliff.toml`). The first release PR is the exception: it does not bump anything. It publishes the existing 0.2.0 with its changelog.
+3. **Merge the release PR.** The `release` job publishes the crate to crates.io and pushes the `v<version>` tag (no GitHub Release from release-plz; `git_release_enable = false`).
+4. **cargo-dist builds the GitHub Release.** The `v*` tag triggers `.github/workflows/release.yml`, which builds the binaries and installers for all five targets and creates the GitHub Release.
+
+Rules:
+
+- Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
+- Keep the release PR's branch named `release-plz-*` (release-plz creates it). Do not rename, recreate, or hand-create it: the `release` job publishes only for merged `release-plz-*` PRs.
+- After merging a release PR, open the `Release-plz` run for the merge commit and check its log confirms the crate was published. A skipped release exits green, so a green check alone does not prove a publish.
+- Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
+
+### If a release fails partway
+
+- **Published but not tagged** (crates.io has `X.Y.Z`, there is no `vX.Y.Z` tag): push the tag by hand at the release commit, the merge commit of the release PR on `main`: `git tag vX.Y.Z <sha> && git push origin vX.Y.Z`. The tag starts `release.yml`.
+- **Tagged but no GitHub Release**: re-run the `Release` workflow run that the tag push started, in the Actions UI. `release.yml` is triggered by version tags and by `pull_request` (plan only, no publish). It has no `workflow_dispatch`, so re-running that tag's run is the recovery path. If that run is gone, delete the remote tag and push it again.
+- **No pre-release channel**: there is no release candidate or dry-run tag. Validation is the CI `Check` job plus `cargo publish --dry-run`, which the operator runs on the release PR before merging it.
+
+### One-time setup (operator)
+
+These steps are done once by a maintainer with admin rights on the repository. They are not automated.
+
+1. **crates.io token**: create an API token with the `publish-new` and `publish-update` scopes, and store it as the repository secret `CARGO_REGISTRY_TOKEN`. This is token-based publishing, not trusted publishing (OIDC).
+2. **GitHub token for release-plz**: create a fine-grained token with `Contents: read and write` and `Pull requests: read and write` on this repository, and store it as the repository secret `RELEASE_PLZ_TOKEN`. The default `GITHUB_TOKEN` cannot be used: tags and PRs it creates do not trigger other workflows, so the `v*` tag would never start `release.yml`. 
+3. **Allow Actions to open PRs**: in Settings → Actions → General → Workflow permissions, enable "Allow GitHub Actions to create and approve pull requests".
 
 ### Regenerating third-party notices
 
@@ -121,45 +146,24 @@ The file also carries two hand-maintained sections that `cargo-about` does not g
 
 **When a `-sys` crate is upgraded** (libgit2-sys, onig_sys, libz-sys, libsqlite3-sys, or any new one), re-verify the bundled-native section against the new registry source (`~/.cargo/registry/src/<registry>/<crate>-<version>/...`): the bundled code's licence may have changed, and the `-sys` crate's own crates.io metadata (which `cargo-about` reads) does not reflect the bundled code's licence. Also confirm the OpenSSL-headers statement in that section still holds for the new libgit2-sys version (it is only compiled when `git2`'s `https` feature is enabled on Linux, which lievo does not enable).
 
-The `## lievo vX.Y.Z` heading in the file carries the current version and is bumped in the same PR as the `Cargo.toml` version bump (see the release steps above).
+### Smoke test after a release
 
-### Dry run (pre-release)
+Once the GitHub Release is published, smoke test the published shell installer on a clean macOS and a clean Linux machine:
 
-1. Push the pre-release tag (after the version bump above merged): `git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1`
-2. Watch the GitHub Actions run — the `plan` job validates the config, then all build jobs run in parallel.
-3. Verify the GitHub pre-release contains: archives for all 5 targets, `sha256.sum`, `lievo-installer.sh`, `lievo-installer.ps1`.
-4. Smoke test the published shell installer on a clean macOS and a clean Linux machine (see below).
-
-### Smoke test (copy-paste commands)
-
-On a clean macOS (Apple Silicon or Intel):
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/download/v0.1.0-rc.1/lievo-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
 lievo --version
 # Verify MCP responds to an initialize request:
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1
+set -o pipefail
+response=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1)
+echo "$response" | grep -q '"serverInfo"' || { echo "MCP initialize failed: $response" >&2; exit 1; }
 ```
 
-On a clean Linux (x86_64 or ARM):
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/download/v0.1.0-rc.1/lievo-installer.sh | sh
-lievo --version
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1
-```
-
-Both should print `lievo` followed by the version in `Cargo.toml` (`lievo 0.1.0-rc.1` for this dry run) and a JSON-RPC response with `serverInfo`.
-
-### Cutting the real release
-
-1. Confirm the dry run succeeded and the smoke test passed.
-2. **Bump to the final version**: PR bumping `Cargo.toml` (and `Cargo.lock`) from `0.1.0-rc.1` to `0.1.0`, and the `## lievo` heading in `THIRD_PARTY_NOTICES.md` → merge.
-3. **Set the changelog date**: in `CHANGELOG.md`, replace the `- Unreleased` placeholder on the `## [0.1.0]` heading with today's date in `YYYY-MM-DD` form, leaving the rest of the entry untouched. Commit this in a normal PR and merge it — do **not** do this in the release commit itself.
-4. From the merge commit on `main`, push the final tag: `git tag v0.1.0 && git push origin v0.1.0`. The tag must point at the merge commit that carries the dated changelog, so the GitHub Release body renders the correct version section.
-5. The release workflow creates a GitHub release with all artifacts.
+The first command should print `lievo` followed by the released version (e.g. `lievo 0.2.0`). The script exits non-zero if the MCP response lacks `serverInfo`.
 
 ### Runner allocation per target
 
-All five build targets run on GitHub-hosted runners (see `dist plan` for the current allocation). The exact runner per target is set by cargo-dist in `.github/workflows/release.yml`, which is regenerated with `dist generate` — never hand-edit it.
+All five build targets run on GitHub-hosted runners (see `dist plan` for the current allocation). The exact runner per target is set by cargo-dist in `.github/workflows/release.yml`, which is regenerated with `dist generate` (cargo-dist version pinned in `dist-workspace.toml`) — never hand-edit it.
 
 | Target | Runner (GitHub-hosted) |
 |---|---|

@@ -12,7 +12,11 @@ components" section at the bottom is hand-maintained and must be reviewed
 when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 
 {{#each crates}}
+{{#if (eq package.name "lievo")}}
+## lievo
+{{else}}
 ## {{package.name}} v{{package.version}}
+{{/if}}
 **Licence:** {{license}}
 {{/each}}
 
