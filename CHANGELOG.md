@@ -23,11 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - Persist normalized repository identity and add identity storage methods (#33) (#31)
 - Shared identity-aware repo registration for MCP and CLI (#34) (#29)
-- Detect a moved or re-cloned checkout by its stored… (#37)
+- Detect a moved or re-cloned checkout by its stored git identity and keep its index (#37)
 
 ### Miscellaneous
 
-- Fix the five lens-review findings on the merged… (#21)
+- Fix the five lens-review findings on the merged README (#21)
 - Remove unused hand-written tool descriptions and schemas (#26) (#22)
 - *(deps)* Bump the minor-and-patch group across 1 directory with 4 updates (#2)
 - *(deps)* Bump indicatif from 0.17.11 to 0.18.4 (#3)

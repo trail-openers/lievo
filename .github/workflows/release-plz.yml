@@ -34,6 +34,7 @@ jobs:
       - name: Run release-plz release-pr
         # Pinned to a commit SHA: this job holds RELEASE_PLZ_TOKEN, and tags are mutable.
         # v0.5.142 installs release-plz 0.3.172 by default; `version` pins that explicitly.
+        # Verified: action.yml at this SHA has a `version` input defaulting to 0.3.172, installed via cargo-binstall release-plz@<version>.
         # release-plz 0.3.172 supports `release_always` (added in 0.3.61). v0.5.0 installed 0.3.0, which ignores it.
         uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
@@ -67,6 +68,7 @@ jobs:
       - name: Run release-plz release
         # Pinned to a commit SHA: this job holds CARGO_REGISTRY_TOKEN and RELEASE_PLZ_TOKEN.
         # v0.5.142 installs release-plz 0.3.172 by default; `version` pins that explicitly.
+        # Verified: action.yml at this SHA has a `version` input defaulting to 0.3.172, installed via cargo-binstall release-plz@<version>.
         # release-plz 0.3.172 supports `release_always` (added in 0.3.61). v0.5.0 installed 0.3.0, which ignores it.
         uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
