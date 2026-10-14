@@ -109,6 +109,7 @@ Releases are automated with [release-plz](https://release-plz.dev) and built by 
 
 Rules:
 
+- Keep the `release-plz/action` pin in `.github/workflows/release-plz.yml` on a current v0.5.x. v0.5.0 installs release-plz 0.3.0, which ignores `release_always`; the `version:` input must stay at a release that supports it.
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
 - Keep the release PR's branch named `release-plz-*` (release-plz creates it). Do not rename, recreate, or hand-create it: the `release` job publishes only for merged `release-plz-*` PRs.
 - After merging a release PR, open the `Release-plz` run for the merge commit and check its log confirms the crate was published. A skipped release exits green, so a green check alone does not prove a publish.
