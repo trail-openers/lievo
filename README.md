@@ -126,6 +126,8 @@ claude mcp add lievo --scope user -- lievo mcp
 
 > `lievo mcp` auto-registers the repo it is launched in. An explicit project name (`lievo mcp myapp`) keeps the previous per-project behaviour.
 
+The MCP server is how the agent *talks* to lievo; a short maintained **skill** (`skills/lievo/`) is how the agent learns to *use* it well — the query loop, the JSON output contracts, the summaries distinction, and the pitfalls. For per-agent install steps (Claude Code, pi, Hermes, Codex) and how each agent gets both the server and the skill, see [Using lievo with your agent](docs/using-with-agent.md).
+
 Available MCP tools:
 
 `lievo_explore` is the only tool listed to the agent by default; every other tool below is hidden unless you set `LIEVO_MCP_TOOLS` (comma-separated tool names, e.g. `export LIEVO_MCP_TOOLS=get_entity,read_file`) before the server starts — see the [quickstart](docs/quickstart.md).
