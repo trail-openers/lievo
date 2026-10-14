@@ -115,7 +115,7 @@ Explicit names (`lievo admin add-repo <path> <project>`) are used as given:
 - Refused if the named project holds any repo with a different remote identity, which covers mixed projects (only when the new checkout has an identity); pick another name or register the path under its own project;
 - the name is held by the same remote, or by a repo with no stored identity → the checkout joins that project as an additional repo.
 
-The name is used as given (surrounding whitespace is trimmed).
+The name is used as given (surrounding whitespace is trimmed). A checkout that is already registered keeps its project; a different `<project>` argument is ignored with a notice.
 
 Without an argument, `lievo mcp` registers the repository it is started in under a derived name. With `<project>`, it serves that already-registered project and registers nothing.
 
@@ -125,7 +125,7 @@ To set the remote identity lievo uses for a repo yourself, add an `identity:` ke
 identity: github.com/trail-openers/lievo
 ```
 
-The `identity:` key is read from the checkout itself, so a committed config in a repository you don't control can make it join an existing project under that identity. It never moves an existing registration, but treat repo-supplied `identity:` values as untrusted. See [Known limitations](data-storage.md#known-limitations).
+The `identity:` key is read from the checkout itself, so a committed config in a repository you don't control can make it join an existing project under that identity. An `identity:` override never moves a registration by itself, but treat repo-supplied `identity:` values as untrusted. See [Known limitations](data-storage.md#known-limitations).
 
 When a checkout has moved, lievo does one of the following:
 
