@@ -113,7 +113,7 @@ Rules:
 - On the first release PR, check the `CHANGELOG.md` diff: one intro block only, a `0.2.0` section containing only commits after the `v0.1.0` tag, and no duplicated content. If the output is wrong, fix the section by hand on the release PR branch before merging.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
 - The first release-plz release is `0.2.0`. The crate has never been published, so `Cargo.toml` was set to `0.2.0` by hand in the PR for #40 (the only manual version bump). Without that bump release-plz would fail: `release-pr` bails with "not found in the registry, but the git tag v0.1.0 exists". With `0.2.0` there is no matching tag, so release-plz opens a release PR for the unpublished `0.2.0` (changelog only, version unchanged) and publishes it when that PR is merged. Check that the release PR keeps `0.2.0` and does not re-tag or re-publish `0.1.0` before merging it.
-- release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`. Update it on the release PR branch before merging (see "Regenerating third-party notices").
+- release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`, and it rewrites the release PR branch on every push to `main`, so a hand edit there is lost. Bump the heading in a normal PR to `main` before merging the release PR (see "Regenerating third-party notices"). Commits on `main` survive release-plz's rewrites. Check that the heading matches the version in the release PR.
 
 ### One-time setup (operator)
 
@@ -141,7 +141,7 @@ The file also carries two hand-maintained sections that `cargo-about` does not g
 
 **When a `-sys` crate is upgraded** (libgit2-sys, onig_sys, libz-sys, libsqlite3-sys, or any new one), re-verify the bundled-native section against the new registry source (`~/.cargo/registry/src/<registry>/<crate>-<version>/...`): the bundled code's licence may have changed, and the `-sys` crate's own crates.io metadata (which `cargo-about` reads) does not reflect the bundled code's licence. Also confirm the OpenSSL-headers statement in that section still holds for the new libgit2-sys version (it is only compiled when `git2`'s `https` feature is enabled on Linux, which lievo does not enable).
 
-The `## lievo vX.Y.Z` heading in the file carries the current version. Bump it on the release PR branch before merging the release PR.
+The `## lievo vX.Y.Z` heading in the file carries the current version. Bump it in a normal PR to `main` before merging the release PR (never on the release PR branch, which release-plz overwrites).
 
 ### Smoke test after a release
 
