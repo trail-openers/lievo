@@ -56,5 +56,7 @@ jobs:
         with:
           command: release
         env:
+          # RELEASE_PLZ_TOKEN (not GITHUB_TOKEN): the v<version> tag pushed here would
+          # not trigger the cargo-dist release workflow if GITHUB_TOKEN created it.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

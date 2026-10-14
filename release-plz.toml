@@ -17,6 +17,11 @@ changelog_path = "./CHANGELOG.md"
 # Publish to crates.io using the CARGO_REGISTRY_TOKEN secret (token-based publishing,
 # NOT trusted publishing/OIDC; see CONTRIBUTING.md "Releasing")
 publish = true
+# release_always = false: publish only when a release-plz release PR (branch `release-plz-*`)
+# is merged, not on every push to main. The default (true) would publish 0.1.0 on the first
+# ordinary merge to main, which fails because the v0.1.0 tag already exists. The first
+# crates.io publish is the 0.2.0 release PR.
+release_always = false
 # Create git tags automatically (the v-tag triggers cargo-dist's release.yml)
 git_tag_enable = true
 # Custom tag name format: v0.2.0 (matches cargo-dist trigger pattern '**[0-9]+.[0-9]+.[0-9]+*')

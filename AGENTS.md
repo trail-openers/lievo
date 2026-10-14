@@ -189,15 +189,13 @@ When a file exceeds its budget OR has 3+ distinct responsibilities:
 
 ### Conventional Commits
 
-All commits use [Conventional Commits](https://www.conventionalcommits.org/) format:
+All commits use [Conventional Commits](https://www.conventionalcommits.org/) format with **no issue number in the scope**. release-plz and git-cliff build the changelog from commit subjects, and a numeric scope such as `feat(#123):` gets mangled in the generated `CHANGELOG.md`. Reference the issue at the end of the subject or in a `Closes #123` trailer instead:
 
 ```
 feat: brief description (#123)
 fix: brief description (#45)
 docs: brief description (#78)
 ```
-
-**No issue number in the scope.** Use `type: description` (or `type(area): description` with an alphabetic area). Reference the issue at the end of the subject or in a `Closes #123` trailer. Do NOT write `feat(#123):`: release-plz/git-cliff build the changelog from these subjects and mangle numeric scopes.
 
 **Commit Types**:
 - `feat`: New feature
@@ -207,10 +205,11 @@ docs: brief description (#78)
 - `test`: Test additions/modifications
 - `perf`: Performance improvements
 - `chore`: Maintenance tasks
+- `ci`: CI configuration
 
 **Example**:
 ```
-feat(#12): add json output format support
+feat: add json output format support
 
 Users can now export analysis results as JSON.
 Adds --json flag to all query commands.
@@ -461,7 +460,7 @@ Before EVERY commit, verify:
 
 1. **Every line of code is a liability** — justify necessity before creation
 2. **Quality gates are mandatory** — all checks pass locally before push
-3. **Conventional commits** — feat/fix/docs format with issue numbers
+3. **Conventional commits** — feat/fix/docs format, no issue number in the scope (reference issues in the subject or `Closes #N` trailer)
 4. **Library + CLI + MCP server, async for I/O only** — lib.rs public API + lievo.rs CLI + src/mcp/ MCP server, async/tokio for MCP transport and external integrations, synchronous core analysis
 5. **500-line source file limit** — refactor when files get too large
 6. **Issue-driven work** — all changes match GitHub issue requirements

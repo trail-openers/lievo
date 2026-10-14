@@ -102,7 +102,7 @@ Windows (best-effort):
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.ps1 | iex"
 ```
 
-With a Rust toolchain, from crates.io (published releases only; the version on crates.io is the latest release):
+With a Rust toolchain, from crates.io (the latest published release):
 
 ```bash
 cargo install lievo

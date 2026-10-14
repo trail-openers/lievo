@@ -49,6 +49,7 @@ Use conventional commit format:
 - **refactor**: Code restructuring without behavior change
 - **test**: Test additions or modifications
 - **chore**: Maintenance tasks, dependency updates
+- **ci**: CI configuration
 
 Format: `feat: brief description (#123)`, or `feat: brief description` with a `Closes #123` trailer in the body.
 
