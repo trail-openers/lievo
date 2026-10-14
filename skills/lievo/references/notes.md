@@ -1,6 +1,7 @@
-# lievo install, summarizer, data, benchmarks
+# lievo install, summarizer backends, configuration, data
 
 ## Install
+
 macOS / Linux (no Rust toolchain needed):
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
@@ -10,77 +11,116 @@ Windows (best-effort):
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.ps1 | iex"
 ```
 From source: `cargo install --git https://github.com/trail-openers/lievo.git`
-Check with `lievo --version`. Install needs network (GitHub + crates.io); the embedding model is fetched from Hugging Face on first use.
+
+Check with `lievo --version`. Installing needs network access (GitHub and crates.io). The embedding model is fetched from Hugging Face on the first refresh that builds the vector index.
+
+## Configuration
+
+### Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `LIEVO_PROJECT_DIR=/path/to/repo` | Pins the repo. Wins over the working directory. |
+| `LIEVO_NO_REFRESH=1` | Disables automatic background indexing. |
+| `LIEVO_MCP_TOOLS=a,b` | Extra MCP tools to list. Default lists only `lievo_explore`. |
+| `LIEVO_DB=/path/to/db` | Moves the SQLite database off `~/.lievo/`. |
+| `LIEVO_APFEL_ENDPOINT=url` | Summarizer endpoint. Overrides `apfel_endpoint` in config. |
+| `LIEVO_SUMMARIZER_TOKEN=token` | Bearer token sent to the summarizer endpoint. Keep it out of config files and version control. |
+
+### `<repo>/.lievo/config.yaml`
+
+Per-repo settings. It is optional and lives in the checkout. **It is untrusted for repos you don't control** (see the security notes below).
+
+| Key | Meaning |
+|---|---|
+| `summarize` (bool) | Unset: automatic. With the `apfel` backend, summaries are on when `apfel` is on PATH. With `llama-server` or `generic`, they are on when `apfel_endpoint` is set. `true` forces on, `false` disables. |
+| `apfel_endpoint` (string) | Base URL of the summarizer, e.g. `http://127.0.0.1:8080`. Must be an absolute `http(s)` URL. |
+| `summarizer_backend` (string) | `apfel` (default), `llama-server`, or `generic`. Any other value is a config error. |
+| `summarizer_model` (string) | The `model` field sent in requests. Ignored by `apfel`. Must match what the server reports. |
+| `summarizer_input_char_budget` (int) | Per-call input budget in characters. Default 24,000; clamped to 2,000–64,000. Applies to `llama-server` and `generic` only. |
+| `identity` (string) | Overrides the identity key derived from the `origin` remote. Used for project naming and moved-checkout matching. |
+| `exclude`, `languages`, `preserve_function_entities`, `subsystems`, `module_depth` | Analysis overrides. |
+
+### Security
+
+- **Repo-supplied config can point summaries at a host you did not choose.** A `.lievo/config.yaml` in an untrusted repo can set `apfel_endpoint` or `summarizer_backend`. A `refresh` that summarizes then sends source code to that endpoint, and sends `LIEVO_SUMMARIZER_TOKEN` as a bearer token if the variable is set. Before refreshing a repo you don't control, read its `.lievo/config.yaml`, or refresh with `--no-summarize`, which contacts no summarizer.
+- **Use `https` for non-loopback endpoints.** lievo accepts plain `http` URLs, and it warns when a summary run sends source to a non-loopback host. Loopback endpoints do not trigger the warning.
+- **`identity:` in repo config is untrusted too.** It sets the project's identity key, which affects project naming and whether a moved checkout is re-attached to an existing project. See [data-storage.md#known-limitations](https://github.com/trail-openers/lievo/blob/main/docs/data-storage.md#known-limitations).
 
 ## Summarizer backends
-Summarization is optional. Backends: `apfel` (default), `llama-server` (llama.cpp), `generic` (any OpenAI-compatible endpoint). Lievo never downloads or pins a model — the model is whatever the server serves.
 
-Config lives in `<repo>/.lievo/config.yaml` (per repo); env vars override where noted.
+Summarization is optional. lievo never downloads, pins, or bundles a model. The model is whatever the configured server serves.
 
-| Key / env | Meaning |
-|---|---|
-| `summarize` (bool) | Unset = auto (on if a backend is configured; for `apfel`, on if `apfel` is on PATH). `false` disables entirely. |
-| `apfel_endpoint` (string) / `LIEVO_APFEL_ENDPOINT` | Base URL, e.g. `http://127.0.0.1:8080`. Must be absolute http(s). Local `http` is fine but prompts carry source code. |
-| `summarizer_backend` (string) | `apfel` (default) / `llama-server` / `generic`. Unknown = config error. |
-| `summarizer_model` (string) | The `model` field sent in requests. Ignored by `apfel`; id must match what the server reports (llama-server: full `-hf` spec; Ollama: short name; generic: whatever `/v1/models` reports). |
-| `summarizer_input_char_budget` (int) | Per-call input budget in chars (default 24,000, clamped 2,000–64,000). Applies to `llama-server`/`generic` only. |
-| `LIEVO_SUMMARIZER_TOKEN` (env) | Bearer token. Deliberately env, not config — config is checked in, tokens are not. Never commit. |
+| Backend | Use it for | Health probe |
+|---|---|---|
+| `apfel` (default) | On-device summaries on Apple Silicon, through the `apfel` binary on PATH, or an apfel server at `apfel_endpoint`. | `GET /health` |
+| `llama-server` | A llama.cpp server at `apfel_endpoint`. | `GET /health` |
+| `generic` | Any OpenAI-compatible server at `apfel_endpoint`. | `GET /v1/models`, then `GET /health` |
 
-Health probe: `apfel` and `llama-server` probe `GET /health`; `generic` probes `GET /v1/models` then `GET /health`. It accepts the standard model-list shape or a `{status: ...}` body. A 200 with the wrong shape degrades to the no-summarizer path — never a hard error.
+All three send chat requests to `POST {apfel_endpoint}/v1/chat/completions`. A probe that returns a model-list shape or a `{status: ...}` body is accepted. A 200 with the wrong shape falls back to the no-summarizer path. It is never a hard error.
 
-### apfel (Apple Silicon)
-apfel uses Apple Foundation Models on-device and needs no remote server or model download. It honors lievo's `#<n>:` batch contract, but is **slow** (minutes for hundreds of functions). With apfel on PATH, a plain `lievo refresh` auto-enables summaries. For quick structural work use `--no-summarize`; for summaries, run a plain refresh in the background or `lievo summarize <project>` later.
+### What a backend must support
 
-### Backends that fail lievo's batch contract
-A model that answers single items well but loops to empty output on the multi-item batch prompt (with or without the `#<n>` tokens) yields nothing from `parse_batch_response`, and summaries are silently skipped. This is a format failure, not a connectivity one. Test a backend against a multi-item prompt before relying on it for summaries. An unreachable backend behaves like any other: a warning, and no summaries.
+lievo's batch prompt asks for one line per function, and the backend must follow that format:
 
-The contract lievo requires (from `src/summarization/apfel.rs`): system prompt + user body `Summarize each function below. Output one line per function: #<n>: <summary>`, items as `--- Function: #0\n<code>\n---`. A backend must emit one `#<n>:` line per entry; plain-prose or empty output = parse failure. A degraded run (backend unreachable or contract-ignoring) never fails: indexing succeeds, summaries are skipped, and an unreachable backend logs a warning naming it.
+- **Batch contract.** The system prompt and user body ask for `#<n>: <summary>`, one line per input item, from items formatted as `--- Function: #<n>`. The backend must emit one `#<n>:` line per item. Plain prose or empty output is a parse failure.
+- **Multi-item behavior.** A model that answers a single item well but returns empty output for the multi-item prompt yields no summaries. The run does not fail. Summaries are skipped. Test with a multi-item prompt, not a single-item one.
+- **Input budget.** The backend must accept the per-call input budget (`summarizer_input_char_budget`, or the backend default).
+- **Reachability.** The health probe must succeed, and `POST /v1/chat/completions` must work.
+- **Authentication.** If the server requires a bearer token, set `LIEVO_SUMMARIZER_TOKEN`.
 
-### llama-server (cross-platform default for remote)
+An unreachable backend, or one that fails the health probe, prints a warning that names the backend and endpoint. Indexing still succeeds, and summaries are skipped.
+
+### Check a backend before relying on it
+
+1. Probe it: `curl -s http://127.0.0.1:8080/health` (llama-server or apfel), or `curl -s http://127.0.0.1:11434/v1/models` (generic).
+2. Refresh one project with summaries enabled: `lievo refresh <project>`. Read the output for warnings.
+3. Check coverage: `lievo admin status <project>`. The `Summary coverage:` lines should show a non-zero done count. `0/N` means the backend produced no usable summaries.
+
+### Examples
+
+llama-server:
 ```bash
 brew install llama.cpp
-llama-server -hf unsloth/Qwen3-4B-GGUF:Q4_K_M -c 32768 -ngl all --port 8080
-# .lievo/config.yaml
+llama-server -hf <owner>/<model>-GGUF:<quant> -c 32768 -ngl all --port 8080
+```
+```yaml
+# .lievo/config.yaml in the repo you are indexing
 apfel_endpoint: http://127.0.0.1:8080
 summarizer_backend: llama-server
 ```
-### Ollama (easy alternative)
-OpenAI-compatible at `http://localhost:11434/v1`. Two gotchas: default context is 4096 tokens (set `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`) and default port 11434 collides with apfel's default (move one of them).
+
+Ollama (generic):
 ```yaml
 apfel_endpoint: http://127.0.0.1:11434
 summarizer_backend: generic
-summarizer_model: qwen3:4b
+summarizer_model: <model name from /v1/models>
 ```
-Licensing: prefer Apache-2.0 weights; **do not use Qwen2.5-Coder-3B** (its 3B is non-commercial Qwen Research License). The batch prompt expects one `#<n>:` line per input item — a model that ignores this produces unparseable output (a format issue, not a connectivity one).
+Ollama's default context is 4,096 tokens. Start it with a larger value, e.g. `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. Its default port (11434) is also a common apfel default, so move one of them if both run on one machine.
 
-### Verifying before indexing
-```bash
-curl -s http://127.0.0.1:8080/health        # llama-server / apfel: {"status":"ok"}
-curl -s http://127.0.0.1:11434/v1/models    # generic / Ollama: {"object":"list","data":[...]}
-```
-Then a one-shot `lievo refresh <project>` prints a verbatim degradation warning if the backend is unreachable (indexing still succeeds; only summaries are skipped).
+Choose a model whose license allows your use. The model is not part of lievo, so its license is yours to check.
 
-## Data paths & reset
+## Install the skill and the MCP server
+
+See [docs/using-with-agent.md](https://github.com/trail-openers/lievo/blob/main/docs/using-with-agent.md) for installing this skill into each agent, and [docs/quickstart.md](https://github.com/trail-openers/lievo/blob/main/docs/quickstart.md#connect-your-agent) for MCP registration.
+
+## Data paths and reset
+
 | Path | Purpose |
 |---|---|
-| `~/.lievo/lievo.db` | SQLite DB (projects, repos, entities, relationships, summaries, insights). |
-| `~/.lievo/indices/{repo-hash}/ts-index/` | Per-repo tree-sitter + vector index (FNV-1a hash of repo path). |
-| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights (~16 MB, `minishlab/potion-code-16M-v2`), shared with other HF tools. |
+| `~/.lievo/lievo.db` | SQLite database: projects, repos, entities, relationships, summaries, insights. |
+| `~/.lievo/indices/<repo-hash>/` | Per-repo tree-sitter and vector index. |
+| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights (about 16 MB), shared with other Hugging Face tools. |
 | `<repo>/.lievo/config.yaml` | Optional per-repo config. |
 | `~/.lievo/debug-import-resolution.log` | Optional import-resolution debug log (1 MB cap). |
 
-- `LIEVO_DB=/path/to/db` moves the DB off `~/.lievo/` (then delete that file, not the dir, to reset).
-- Reset everything (**user-only**: destructive, an agent must not run this unprompted): `rm -rf ~/.lievo` (rebuilds from source on next refresh).
-- Reset only the vector index: `rm -rf ~/.lievo/indices/` (DB stays intact; model re-downloads if its HF cache was wiped).
-- `lievo doctor` shows the DB path actually in use.
+`lievo doctor` shows the database path actually in use.
 
-## Benchmarks (context on when lievo helps)
-Measured on an 11,000-file commercial monorepo (lievo parses ~20% — the JS portion; Ruby/React invisible). 435 runs, headless Claude Sonnet, set-F1 of returned file paths vs hand-derived gold. Caveats: single repo, single model, JS-only, pre-release build, raw data not published — ballpark, not peer-reviewed.
+### Reset (ask the user first; never run these autonomously)
 
-| Arm | Multi-turn F1 | Change-impact F1 | Bug localization |
-|---|---|---|---|
-| baseline (built-ins only) | 0.550 | 0.951 | 0.371 |
-| **built-ins + lievo (shipping config)** | **0.657** (+0.106, significant) | 0.926 (tied) | 0.331 (tied) |
-| lievo only | 0.781 | 0.765 (worse than built-ins) | — |
+These commands delete data. An agent must ask the user before running any of them, and must not run them as part of a task.
 
-Headline: with lievo **alongside** normal search, long multi-step work improves (more precise, fewer irrelevant files, ~same recall) and it never measurably worsens anything tested. Change-impact and bug-localization show **no measurable difference** — so for those, lievo is a neutral-to-helpful complement, not a magic bullet. `lievo_only` (replacing built-ins) is not a recommendation: it wins multi-turn F1 but loses change-impact F1.
+- Delete the database only: remove the file named by `LIEVO_DB`, or `~/.lievo/lievo.db`. Removing the directory is not needed.
+- Delete only the vector index: `rm -rf ~/.lievo/indices/`. The database stays. The model re-downloads if its Hugging Face cache was wiped.
+- Delete everything: `rm -rf ~/.lievo`. The next refresh rebuilds from source.
+- Remove one repo's data: `lievo admin delete-repo <name> <project>`.

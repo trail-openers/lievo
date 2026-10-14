@@ -74,17 +74,15 @@ Restart Cursor, or enable the server from **Customize**. To check the path is ri
 
 ### pi
 
-pi has no built-in MCP support; use the [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) package. Add an `mcpServers` entry to the shared user-global config `~/.config/mcp/mcp.json` (the project-local `.mcp.json` works too, but the user file is what makes one registration cover every repo):
+pi has built-in MCP support. Register lievo once at user level:
 
-```json
-{
-  "mcpServers": {
-    "lievo": { "command": "lievo", "args": ["mcp"] }
-  }
-}
+```bash
+pi mcp add lievo -- lievo mcp
 ```
 
-pi launches the server from the directory you start pi in, so start pi from inside your repo. If that is not possible for you, add `"cwd": "/path/to/repo"` to the entry — it pins the working directory for every session.
+That writes to pi's user config, `~/.pi/agent/mcp.json`, so one registration covers every repo. pi launches the server from the directory you start pi in. To pin one repo instead, add `--cwd /path/to/repo`. pi's own MCP documentation (`docs/mcp.md` in the installed pi package) describes the config format and tool exposure.
+
+A third-party alternative is the [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) package. Its configuration is defined by its own docs, and it is not maintained by the lievo project. Use one of the two, not both.
 
 ## First use
 
@@ -145,7 +143,7 @@ When something is off, run lievo from the repository and ask it to check:
 
 ```bash
 lievo doctor            # human report
-lievo doctor --format json
+lievo --format json doctor
 ```
 
 `lievo doctor` is read-only. It reports whether lievo will work in that directory — the resolved repo and its source, registration, index state, and where the data lives — and each problem line names the single command that fixes it. It creates and deletes a temporary file in the data directory to test that the directory is writable, but it does not change your index or your registrations. It also diagnoses two states it can only name, not fix: a database that cannot be opened (corrupt or locked), and a repo with no commits yet. It exits 0 when lievo will work here and 1 when it will not.
@@ -163,10 +161,10 @@ To report a bug, open an issue on the [bug report template](https://github.com/t
 - Codex CLI: `codex mcp remove lievo`
 - VS Code: `MCP: List Servers`, select lievo, uninstall
 - Cursor: delete the `"lievo"` entry from each repo's `.cursor/mcp.json`
-- pi: delete the `"lievo"` entry from `~/.config/mcp/mcp.json`
+- pi: `pi mcp remove lievo`
 
 Then remove the `lievo` binary (delete it from wherever the installer placed it) and, optionally, its data:
 
 ```bash
-rm -rf ~/.lievo           # optional: delete all lievo data
+rm -rf ~/.lievo           # optional, destructive: deletes all lievo data and the index
 ```

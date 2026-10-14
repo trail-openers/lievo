@@ -1,131 +1,151 @@
 ---
 name: lievo
 description: "Query a repo's structural code map with lievo (impact, deps, dependents, entities, subsystems). Use when asked what depends on X, what breaks if Y changes, or where a symbol lives in an indexed repo (rs, py, js/jsx/mjs, ts/tsx, go)."
-version: 1.0.0
-author: Janni Turunen (trail-openers), Hermes Agent
+version: 1.1.0
 license: AGPL-3.0
-platforms: [linux, macos]
 metadata:
-  hermes:
-    tags: [lievo, code-analysis, codebase-map, impact, mcp, tree-sitter]
-    related_skills: [hermes-agent-skill-authoring]
+  author: Janni Turunen (trail-openers)
 ---
 
 # lievo
 
-Use lievo to ask **structural** questions about a codebase — what depends on what, what breaks if a file changes, where a function lives — instead of grepping and reading file after file. Lievo keeps a SQLite index of modules / files / functions and their call-import-containment edges, and answers from that graph. It **adds** to the agent's built-in search; it does not replace grep/`search_files`/`read_file`.
+Use lievo to ask **structural** questions about an indexed codebase: what depends on what, what breaks if a file changes, where a function lives. lievo answers from a SQLite graph of modules, files, and functions and their call, import, and containment edges. It complements the agent's built-in file search and file read; it does not replace them.
 
-Lievo indexes **only** `.rs .py .js .jsx .mjs .ts .tsx .go`. Every other language is invisible to every query. On a mixed repo (e.g. Rails+React) it sees only the supported slice — fall back to built-in search for the rest.
+lievo indexes only `.rs .py .js .jsx .mjs .ts .tsx .go`. Other languages are invisible to every query. On mixed repos, use built-in search for the rest.
 
-This skill is for **driving the CLI** from the `terminal` tool. (An MCP server, `lievo mcp`, exposes the same graph to other agents over stdio; the MCP surface is in `references/mcp-tools.md`.)
+## Interfaces
 
-## When to Use
-- "What breaks if I change this file/function?" → `query impact` / `query dependents`
-- "Where is X implemented / what does X do?" → `query entities` then `query entity`
-- "What's in this subsystem / module?" → `query subsystems` / `query children`
-- "What's the architecture / where's the complexity?" → `query subsystems`, `query hotspots`, `query flows`
-- Orienting to a repo you haven't read yet, before planning edits.
+lievo has two interfaces over the same graph:
 
-**Don't use for:** literal text search across all files, non-indexed languages, or reading raw file contents (use `search_files` / `read_file`). Lievo has no full-text corpus search — it is a symbol/structure index.
+- **CLI** (`lievo ...`): needs shell access. Commands below.
+- **MCP server** (`lievo mcp`): works without shell access. By default it lists one tool, `lievo_explore`. See [references/mcp-tools.md](references/mcp-tools.md).
 
-## Prerequisites
-- `lievo` on PATH (`lievo --version`). Install: `references/notes.md`.
-- A repo registered as a **project** and refreshed. If not, set it up (below). Default project name (same rules as the #27 naming): the checkout dir name if free; if taken, `<owner>/<repo>` when the repo has an identity (origin remote or `identity:` config), else `<dir>-2`, `-3`, …; a second checkout of the same identity (e.g. a git worktree) becomes `<repo>@<dir>`. Pass an explicit name to avoid guessing.
-- `lievo doctor` (read-only) reports registration + index state and the one command to fix it. **Run it first** when in doubt.
-- **Multi-project caveat:** with more than one project in the DB, omitting `--project <name>` errors (`multiple projects exist`). Almost always pass `--project` explicitly.
+If the agent is registered for lievo's MCP server, it can use the same steps without shell access. Registration per client: [docs/quickstart.md](https://github.com/trail-openers/lievo/blob/main/docs/quickstart.md#connect-your-agent).
 
-## Set up a repo (first time)
+## When to use
+- "What breaks if I change this file or function?" → `query impact`, `query dependents`
+- "Where is X implemented?" → `query entities`, then `query entity`
+- "What is in this subsystem or module?" → `query subsystems`, `query children`
+- Orienting in an unfamiliar repo before planning edits.
+
+**Don't use for** literal text search, non-indexed languages, or reading raw file contents. lievo has no full-text search. Use the agent's file search and file read tools.
+
+## Setup (first time, fast path)
 ```bash
-cd /path/to/repo
-lievo admin add-repo .            # registers repo + creates project (default name: see Prerequisites)
-lievo refresh <project>            # builds the index (add --no-summarize for the fast path, see Summaries)
-lievo doctor                       # confirm: registered: true, index: current
+lievo admin add-repo /path/to/repo          # registers the repo and creates a project
+lievo refresh <project> --no-summarize      # structural + vector index, no summaries
+lievo doctor                                # expect: registered: true, index: current
 ```
-`add-repo` prints `Registered repository '<repo>' (id: <id>) in project '<project>'`. `refresh` defaults the project to the sole project only when exactly one exists; otherwise pass it.
 
-## Quick Reference (CLI)
-All `query` subcommands take `--project <name>`. The global `--format json` goes *before* the subcommand: `lievo --format json query entities ...`.
+- Project name: the checkout directory name, or a suffixed or `<owner>/<repo>` name if that is taken. A second checkout of the same repo (e.g. a git worktree) becomes `<repo>@<dir>`. Pass an explicit name to avoid guessing. Details: [quickstart.md#project-names](https://github.com/trail-openers/lievo/blob/main/docs/quickstart.md#project-names).
+- `refresh` picks the project automatically only when exactly one project exists.
+- Summaries are optional and slower. Add them as a separate step; see [Summaries](#summaries).
+
+## Query loop (CLI)
+1. `lievo doctor`: confirm the index is current. If it is missing or stale, run `lievo refresh <project> --no-summarize`.
+2. **Orient:** `lievo --format json query subsystems --project P`, then `query children <id>` to drill down.
+3. **Locate:** `lievo --format json query entities --project P "<term>"`, and take the `entity_id`.
+4. **Interrogate:** `query entity <id>`, `query deps <id>`, `query dependents <id>`.
+5. **Assess change:** `query impact --project P <repo-relative-file>...` for the files you plan to touch.
+
+## Quick reference (CLI)
+
+`--format json` is a global flag. It works before or after the subcommand (`lievo --format json query entities ...` and `lievo query entities ... --format json` both work). Use `--format json` whenever you parse output; human layout is not stable.
+
+`--project` is accepted by `entities`, `subsystems`, `flows`, `docs`, `hotspots`, `conventions`, and `impact`. `deps`, `dependents`, `modules`, and `files` take IDs and have no `--project`. `entity`, `relationships`, and `children` accept `--project` but ignore it, because entity IDs are project-scoped.
 
 | Question | Command |
 |---|---|
-| Is lievo working here? (read-only) | `lievo doctor` (add `--format json`) |
+| Is lievo working here? | `lievo doctor` (`lievo --format json doctor` for scripts) |
 | Register repo + project | `lievo admin add-repo <path> [<project>]` |
-| Create / list / delete project | `lievo admin create-project <name>` / `list-projects` / `delete-project <name>` |
-| List repos, status, coverage, stats | `lievo admin list-repos` / `status` / `coverage` / `info` |
-| Build / update index | `lievo refresh <project>` (`--full`, `--force`, `--no-summarize`, `--no-ignore`) |
+| Projects | `lievo admin create-project <name>` / `list-projects` / `delete-project <name>` |
+| Repos, status, coverage, DB info | `lievo admin list-repos [<project>]` / `status [<project>]` / `coverage` / `info` |
+| Build or update the index | `lievo refresh <project>` (`--no-summarize`, `--full`, `--force`, `--no-ignore`) |
 | Find symbols (keyword) | `lievo query entities --project P "term"` |
-| Find symbols (semantic) | `lievo query entities --semantic --project P "term"` (degrades to keyword if no vector index) |
-| Full symbol detail by id | `lievo query entity --project P <entity-id>` |
-| What it depends on / what depends on it | `lievo query deps <entity-id>` / `dependents <entity-id>` |
+| Find symbols (semantic) | `lievo query entities --semantic --project P "term"` (falls back to keyword with a warning if there is no vector index) |
+| Full detail by ID | `lievo query entity <entity-id>` |
+| Depends on / depended on by | `lievo query deps <entity-id>` / `query dependents <entity-id>` |
 | Both directions | `lievo query relationships <entity-id>` |
-| Children of a module/subsystem | `lievo query children <entity-id>` |
-| Subsystems / modules / files | `query subsystems` / `modules <subsystem-id>` / `files <module-id>` |
-| Blast radius of changed files | `lievo query impact <file> [<file>...]` (repo-relative paths) |
-| Complexity / coupling hotspots | `lievo query hotspots --project P` |
-| Execution flows (cycles) | `lievo query flows --project P` |
-| Detected conventions / docs | `lievo query conventions --project P` / `docs --project P` |
-| Re-summarize entities | `lievo summarize <project>` |
+| Children of a module or subsystem | `lievo query children <entity-id>` |
+| Subsystems / modules / files | `query subsystems --project P` / `query modules <subsystem-id>` / `query files <module-id>` |
+| Blast radius of changed files | `lievo query impact --project P <repo-relative-file>...` |
+| Complexity / coupling hotspots | `lievo query hotspots --project P [--limit N]` |
+| Execution flows | `lievo query flows --project P` |
+| Conventions / docs | `lievo query conventions --project P [--category C]` / `query docs --project P` |
+| Summaries | `lievo summarize <project> [--file <path>]` |
 
-Entity IDs are stable strings: `fn-<hash>` for functions, `<project-id>:<repo>:file:<path>` for files, `...:module:<path>` and `...:subsystem:<path>` for containers. Get an ID from `entities`/`subsystems` (JSON `entity_id` / `id`), then reuse it.
+Entity IDs are stable strings: `fn-<hash>` for functions, `<project-id>:<repo>:file:<path>` for files, and `...:module:<path>` and `...:subsystem:<path>` for containers. Get an ID from `entities` (`entity_id`) or `subsystems` (`id`), then reuse it.
 
-## The query loop (recommended)
-1. `lievo doctor` — confirm `index: current`. If `never_indexed` or stale, `lievo refresh <project>`.
-2. **Orient:** `query subsystems --project P` (top-level map) → `query children <module-id>` to drill.
-3. **Locate:** `query entities --project P "<term>"` → grab the `entity_id`.
-4. **Interrogate:** `query entity <id>` (metrics/summary) and/or `query deps <id>` / `query dependents <id>`.
-5. **Assess change:** `query impact <repo-relative/file>` for the files you plan to touch.
+## MCP tool map
 
-Prefer `--format json` when you will parse the result (pipe to `jq`); human format is for reading.
+**CLI commands need shell access. MCP tools do not.**
 
-## Output formats (verified)
-- **JSON is NOT uniformly NDJSON.** `subsystems`, `deps`, `dependents`, `relationships`, `entity` emit **NDJSON** (one object per line). `entities` emits **one JSON array**. `children` emits **one object** `{parent, children[], child_count}`. Parse per-command; do not assume line-per-record everywhere.
-- Empty `deps`/`dependents`/`relationships` results print a bare `[]` line, not zero lines. A line-per-object parser must accept it.
-- On the relationship commands (`deps`, `dependents`, `relationships`) a `# {"unresolved_imports": N, "unresolved_external": N}` line is written to **stdout** before the rows when resolution counts exist. `2>/dev/null` does not remove it. Skip lines starting with `#`.
-- Field names are `snake_case`; optional fields are **omitted** (not `null`) in most structs, but `entities`/`entity` carry `summary: null` and `metrics_json: null` when absent. `metrics_json` is a *string* containing JSON — parse it twice.
-- `rel_type` ∈ {`calls`, `imports`, `contains`, ...}; `provenance` ∈ {`resolved`, `heuristic`} (heuristic = inferred edge, lower confidence).
-- Human layout is **not stable** — scripts must use JSON.
+By default only `lievo_explore` is listed. The other tools appear only when the server's environment sets `LIEVO_MCP_TOOLS=name1,name2` before `lievo mcp` starts. Set that in the MCP client's server config, not in your shell.
 
-## Summaries — two databases to know
-This is the single most important operational distinction. **Summarization is optional and separate from indexing.** A DB can have the full structural index and zero summaries; or summaries and no vector index. Treat `summary` as possibly-null everywhere.
+| CLI step | MCP tool | Default listing (`lievo_explore` only) |
+|---|---|---|
+| `doctor` | none | `lievo_explore` returns an "indexing in progress" response while the index builds |
+| `subsystems` | `list_subsystems` | `lievo_explore` with `scope="<dir>"` lists indexed files under a directory |
+| `children` / `modules` / `files` | `get_entity` with `include_children=true` | `lievo_explore` with `scope="<dir>"` |
+| `entities` (keyword) | `search_entities` | `lievo_explore` with `query="<term>"` |
+| `entities --semantic` | `search_entities` with `semantic=true` | none |
+| `entity <id>` | `get_entity` | `lievo_explore` with `files=["<repo-relative path>"]` (source by path) |
+| `deps` / `dependents` | `list_relationships` | `lievo_explore` with `include_depth=true` (call paths and blast radius; different shape) |
+| `impact <files>` | `get_impact` with `files` | `lievo_explore` with `files=[...]` and `include_depth=true` |
+| `hotspots` / `conventions` / `flows` | `get_hotspots` / `get_conventions` / `get_execution_flows` | none |
 
-| DB state | `entities[].summary` / `entity.summary` | How you tell | When |
-|---|---|---|---|
-| **No summaries** | `null` | `lievo admin status` → a `Summary coverage:` header, then `<repo>: 0/478 functions summarized (478 missing)` | No summarizer backend available, or `--no-summarize`, or `summarize: false` |
-| **Summaries present** | one-line prose (module/function/file tiers) | the `Summary coverage:` lines show non-zero done counts | A backend (apfel / llama-server / generic OpenAI-compatible) was reachable during `refresh` |
+`lievo_explore` takes `query`, `files`, `scope`, `bundle`, `include_source`, `include_depth`, `max_files`, and `offset`. Its modes and continuation contract are in [references/mcp-tools.md](references/mcp-tools.md).
 
-- **Auto-enable:** a manual `lievo refresh` turns summarization **on** when an `apfel` binary is on PATH, or when a summarizer endpoint is configured. apfel (on-device) honors lievo's batch contract, but summarization is **slow** (minutes for hundreds of functions). Use a backend that honors the batch contract (one `#<n>:` line per input item): a model that answers one item well but loops to empty output on the multi-item prompt yields nothing, and summaries are skipped. Use apfel or a contract-honoring server for summaries.
-- **Fast path:** `lievo refresh <project> --no-summarize` builds the structural + vector index quickly and skips summaries. Use this for exploration; add summaries later with `lievo summarize <project>` or a full refresh when time permits.
-- **Vector index is separate from summaries.** `--no-summarize` still builds the embedding index → `--semantic` works. No vector index → `query entities --semantic` prints `Semantic search unavailable ...` and falls back to keyword (non-fatal). The ~16 MB embedding model downloads once from Hugging Face on the first manual refresh.
-- **No summarizer is configured by default** (no `.lievo/config.yaml`, `LIEVO_SUMMARIZER_TOKEN` unset). For a remote/LLM summarizer, configure `.lievo/config.yaml` (`apfel_endpoint`, `summarizer_backend`) — see `references/notes.md`.
-- A degraded run (backend unreachable) **never fails**: indexing succeeds, summaries are skipped, and a warning names the backend + endpoint.
+## Output contracts (CLI JSON)
 
-## Environment variables (project / config)
-- `LIEVO_PROJECT_DIR=/path/to/repo` — pins which repo is resolved (wins over cwd; fixes an MCP server to one repo).
-- `LIEVO_NO_REFRESH=1` — disables auto background indexing (run `lievo refresh` manually).
-- `LIEVO_MCP_TOOLS=name1,name2` — opt in extra MCP tools (default lists only `lievo_explore`).
-- `LIEVO_DB=/path/to/db` — move the SQLite DB off `~/.lievo/`.
-- `LIEVO_APFEL_ENDPOINT`, `LIEVO_SUMMARIZER_TOKEN` — summarizer endpoint + bearer token (token is a credential; never commit).
-- Per-repo overrides live in `<repo>/.lievo/config.yaml` (`summarize`, `apfel_endpoint`, `summarizer_backend`, `summarizer_model`, `exclude` globs, `preserve_function_entities`, `summarizer_input_char_budget`, `identity`).
+Parse per command. Do not assume one shape everywhere.
+
+- **`entities`**: one JSON array (`[]` when empty).
+- **`subsystems`, `modules`, `files`, `hotspots`**: NDJSON, one object per line: `id`, `name`, `tier`, `module_count`, `file_count`, `complexity_max`. The counts are numbers (0 when unknown).
+- **`entity`**: one JSON object on one line. Keys are always present; `summary`, `metrics_json`, `path`, `language`, `parent_id`, and `repo_id` are `null` when absent. `metrics_json` is a string containing JSON, so parse it twice.
+- **`children`**: one object `{parent, children[], child_count}`. Each child carries `summary` and `metrics_json` in the same nullable form, plus `depends_on` and `depended_by` arrays.
+- **`deps`, `dependents`**: NDJSON rows `{entity_id, entity_name, entity_tier, rel_type, weight, provenance}`. An empty result prints one `[]` line.
+  - **Header line:** when the repo has recorded resolution counts, the first line is `# {"unresolved_imports": N, "unresolved_external": N}`. It goes to **stdout**, before the rows, so `2>/dev/null` does not remove it. It is absent on indexes without those counts. Strip it:
+    ```bash
+    lievo --format json query deps <id> | grep -v '^#' | jq -c 'select(type=="object")'
+    ```
+  - `select(type=="object")` also drops the `[]` line.
+- **`relationships`**: NDJSON rows, deps section first, then dependents section. There is no label or separator between them, and each section can be `[]`. There is no header line. If direction matters, use `deps` and `dependents`.
+- **`impact`**: NDJSON sections `{"section": <label>, "entities": [{id, name, tier}]}`, with labels `changed_files`, `affected_modules`, `affected_subsystems`, `downstream_dependents`, and `affected_callers`. The last line is `{"section":"resolution","unresolved_internal":N|null,"unresolved_external":N|null}`, where `null` means the index has no recorded counts.
+- **`doctor`**: one JSON object. `ok` is `true` exactly when the exit code is 0.
+- Field names are `snake_case`. `rel_type` is e.g. `calls`, `imports`, `contains`. `provenance` is `resolved` (verified edge) or `heuristic` (inferred, lower confidence).
+- Human output is for reading. Its layout is not stable.
+
+## Summaries
+
+Summarization is optional and separate from indexing. A database can have a full structural index with zero summaries. Treat `summary` as possibly `null` everywhere.
+
+- **Check coverage:** `lievo admin status [<project>]` prints a `Summary coverage:` section with one line per repo, `<repo>: <done>/<total> functions summarized (<missing> missing)`. `0` done means no summaries.
+- **Fast path (default):** `lievo refresh <project> --no-summarize` builds the structural and vector indexes and contacts no summarizer. Use it for exploration.
+- **Slow path (explicit, later):** `lievo summarize <project>`, or a plain `lievo refresh <project>`. With the default `apfel` backend, summaries turn on when `apfel` is on PATH; with `llama-server` or `generic`, when `apfel_endpoint` is set. It is slow: minutes for a few hundred functions.
+- **The vector index is separate.** `--no-summarize` still builds it, so `--semantic` works. The embedding model is downloaded once on the first refresh. If that fails, refresh prints a warning and semantic search is disabled until a later refresh succeeds.
+- **A degraded run never fails.** If the backend is unreachable or returns unusable output, indexing still succeeds and summaries are skipped.
+
+Backend requirements, configuration, and the check procedure are in [references/notes.md](references/notes.md#summarizer-backends).
+
+## Configuration and security
+
+- Environment variables: `LIEVO_PROJECT_DIR` (pins the repo), `LIEVO_NO_REFRESH` (disables automatic indexing), `LIEVO_MCP_TOOLS` (extra MCP tools), `LIEVO_DB` (database path), `LIEVO_APFEL_ENDPOINT` and `LIEVO_SUMMARIZER_TOKEN` (summarizer endpoint and bearer token). Full list: [references/notes.md](references/notes.md#configuration).
+- **`<repo>/.lievo/config.yaml` is inside the checkout, so it is untrusted for repos you don't control.** A repo-supplied `apfel_endpoint` or `summarizer_backend` can make `lievo refresh` send source code to that endpoint, and send `LIEVO_SUMMARIZER_TOKEN` as a bearer token if it is set. Before refreshing an untrusted repo, read its `.lievo/config.yaml`, or refresh it with `--no-summarize`, which contacts no summarizer.
+- Use `https` for any non-loopback summarizer endpoint. lievo does not reject plain `http` to a remote host, but it prints a warning when a summary run sends source to a non-loopback host.
+- A repo-supplied `identity:` in `.lievo/config.yaml` is also untrusted. It sets the project's identity key, which affects naming and moved-checkout matching. See [quickstart.md#project-names](https://github.com/trail-openers/lievo/blob/main/docs/quickstart.md#project-names) and [data-storage.md#known-limitations](https://github.com/trail-openers/lievo/blob/main/docs/data-storage.md#known-limitations).
 
 ## Pitfalls
-- **Omitting `--project`** with multiple projects → hard error. Pass it.
-- **Assuming NDJSON for every command** — `entities` is an array, `children` is an object (see Output formats).
-- **`query modules <subsystem-id>` / `query files <module-id>`** take the *container's* ID, not a name; pass the wrong ID and you get `No modules found.` / empty. Get the ID from `query subsystems` (JSON `id`) first.
-- **`summary` can be `null`** even on a healthy index (no summarizer) — don't treat a missing summary as an error; read source via `read_file` or MCP `get_entity`.
-- **`--semantic` without a vector index** falls back to keyword with a warning on stderr (not an error).
-- **Summarization is slow on-device.** For quick orientation use `--no-summarize`; don't wait on a full summarize pass just to look at structure.
-- **Impact paths are repo-relative** (`src/foo.rs`), not absolute and not entity IDs.
-- **Mixed-language repos:** lievo sees only the 8 indexed extensions. A symbol in Ruby/Java/etc. won't appear — that's a miss, not a lievo bug.
-- **Heuristic edges** (`provenance: heuristic`) are inferred; treat as likely-not-certain. `resolved` edges are verified.
-- Index is **incremental**: after editing code, `lievo refresh <project>` updates only what changed (cheap). After upgrading lievo or changing config, use `--force`.
-- A moved/renamed checkout may re-key rows by path; `lievo doctor` shows the resolved repo source (`cwd` vs `LIEVO_PROJECT_DIR`).
+- `query modules <subsystem-id>` and `query files <module-id>` take the container's ID, not a name. Get the ID from `query subsystems` (`id`) first.
+- `provenance: heuristic` edges are inferred. Treat them as likely, not certain.
+- The index is incremental. After edits, run `lievo refresh <project>`. After upgrading lievo or changing `.lievo/config.yaml`, add `--force`.
+- A moved or renamed checkout can re-key rows by path. `lievo doctor` shows the repo source it resolved (`cwd` or `LIEVO_PROJECT_DIR`). If the agent reads the wrong repo, check `LIEVO_PROJECT_DIR`, which wins over the working directory.
 
 ## Verification
-- `lievo doctor` exits 0 and prints `registered: true`, `index: current`, with the resolved repo source correct.
-- `lievo admin status` shows entity/relationship counts for your project and the `Summary coverage:` line (0/N = no summaries — expected if you used `--no-summarize`).
-- A representative `query entities` returns rows with real paths; `query impact <file>` lists affected modules + downstream dependents.
-- JSON parse check: `lievo --format json query subsystems --project P | jq -c .` (NDJSON) vs `... query entities --project P | jq 'length'` (array).
+- `lievo doctor` reports `registered: true` and `index: current`, and the repo source is correct.
+- `lievo admin status <project>` shows entity and relationship counts. With `--no-summarize`, `Summary coverage` at `0/N` is expected.
+- `lievo --format json query impact --project P <file>` ends with a `"section":"resolution"` line.
 
 ## References
-- `references/mcp-tools.md` — the 15 MCP tool names + `lievo_explore` modes (for agents that consume lievo over MCP).
-- `references/notes.md` — install, summarizer backends & `.lievo/config.yaml`, data paths & reset, benchmarks.
+- [references/mcp-tools.md](references/mcp-tools.md): the MCP tools, the `lievo_explore` modes, and the file-read tool disambiguation.
+- [references/notes.md](references/notes.md): install, summarizer backends and `.lievo/config.yaml`, data paths and reset.

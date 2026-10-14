@@ -1,95 +1,84 @@
 # Using lievo with your agent
 
-You've installed lievo and registered it with an agent. This page finishes the job: it makes the agent *use* lievo well, not just reach for it. It covers the four agents lievo supports — **Claude Code, pi, Hermes Agent, and Codex CLI** — and the one file that ties it together, the **lievo skill**.
+An agent gets the most from lievo with two parts:
 
-## The two parts
+1. **The MCP server** (`lievo mcp`) provides lievo's tools. Registration commands per client are in [quickstart.md](quickstart.md#connect-your-agent). They are the single source for registration; this page does not repeat them.
+2. **The lievo skill** (`skills/lievo/`) teaches the agent how to use those tools. It covers the query loop, the CLI and MCP command maps, the JSON output contracts, the summaries distinction, and the pitfalls. Its `SKILL.md` is the source of truth; this page covers installing it.
 
-An agent needs two things to exploit lievo's map:
+Register the server once and install the skill once. Every repo the agent works in then benefits.
 
-1. **The MCP server** (`lievo mcp`) — gives the agent lievo's *tools* (`lievo_explore` by default). This is how the agent talks to lievo.
-2. **The lievo skill** (`skills/lievo/`) — teaches the agent *how* to use those tools: the query loop, the JSON output contracts, the summaries vs no-summaries distinction, and the pitfalls.
+| Agent | MCP registration | Skill location |
+|---|---|---|
+| Claude Code | [quickstart](quickstart.md#claude-code) | `~/.claude/skills/lievo/` (user) or `.claude/skills/lievo/` (project) |
+| pi | [quickstart](quickstart.md#pi) | `~/.agents/skills/lievo/` |
+| Codex CLI | [quickstart](quickstart.md#codex-cli) | No verified skill loader; see [the fallback](#agents-without-a-verified-skill-loader) |
+| Hermes Agent | Per Hermes's MCP documentation (not verified here) | `~/.hermes/skills/lievo/` |
+| Cursor, VS Code | [quickstart](quickstart.md#cursor) / [quickstart](quickstart.md#vs-code-agent-mode) | MCP only; no verified skill loader |
 
-Register the server once, import the skill once, and every repo the agent works in benefits. The MCP server is the interface; the skill is the training. Install both.
+## Install the skill
 
-> **What the skill contains** — a query loop (`doctor` → `subsystems` → `entities` → `entity`/`deps`/`dependents` → `impact`), the full CLI + MCP command map, the verified JSON output contracts, the summaries distinction, the `LIEVO_*` environment variables, and the pitfalls. The skill's `SKILL.md` is the source of truth for all of it; this page only covers *installing* it per agent, so the two never drift.
+Get the skill from the repository, not from a lievo checkout, so the steps work anywhere. Clone the repo to a temporary directory. This uses `main`. Until the skill is merged to `main`, add `--branch feature/issue-42-add-agent-skill`.
 
-## Register the MCP server
+```bash
+git clone --depth 1 https://github.com/trail-openers/lievo /tmp/lievo-src
+```
 
-`lievo mcp` resolves the repository it is launched in, registers it on first use, and indexes in the background. One command per agent; remove by reversing it. Client commands, config paths, and client flags on this page belong to each agent and are not verified by lievo's code. The Claude Code and Codex `mcp add` lines match [quickstart.md](quickstart.md); if a client command differs, follow its docs.
+Then copy `skills/lievo` into your agent's skill location.
+
+**Claude Code** (user-wide):
+```bash
+mkdir -p ~/.claude/skills && cp -R /tmp/lievo-src/skills/lievo ~/.claude/skills/
+```
+Claude Code loads the skill when a task matches its name and description. For a project-local copy, use `.claude/skills/` in the repo root instead.
+
+**pi** (pi scans `~/.agents/skills/`, per pi's `docs/skills.md`):
+```bash
+mkdir -p ~/.agents/skills && cp -R /tmp/lievo-src/skills/lievo ~/.agents/skills/
+```
+
+**Hermes Agent**:
+```bash
+mkdir -p ~/.hermes/skills && cp -R /tmp/lievo-src/skills/lievo ~/.hermes/skills/
+```
+See [Hermes Agent](#hermes-agent) for Hermes-specific notes.
+
+### Agents without a verified skill loader
+
+For Codex CLI, Cursor, VS Code, or any agent whose skill loading is not verified here, copy the skill to a stable path and reference that path from the agent's instructions file. Do not reference `skills/lievo/` relative to your project, because that directory does not exist in your project.
+
+```bash
+mkdir -p ~/.local/share/lievo && cp -R /tmp/lievo-src/skills/lievo ~/.local/share/
+```
+
+Then add a line to your instructions file, such as `AGENTS.md`:
+
+```markdown
+For structural code questions (what depends on X, what breaks if Y changes), follow ~/.local/share/lievo/SKILL.md.
+```
+
+Re-run the clone and copy to update the skill.
+
+## Per-agent notes
 
 ### Claude Code
 
-```bash
-claude mcp add lievo --scope user -- lievo mcp     # add
-claude mcp remove lievo                              # remove
-```
-
-Claude Code sets `CLAUDE_PROJECT_DIR`, which lievo reads — no further configuration.
-
-### Codex CLI
-
-```bash
-codex mcp add lievo -- lievo mcp                     # add
-codex mcp remove lievo                                # remove
-```
-
-Writes `[mcp_servers.lievo]` to `~/.codex/config.toml`. Start Codex from inside the repo. To pin one repo instead of following the working directory (Codex's `--env` flag, unverified here):
-
-```bash
-codex mcp add lievo --env LIEVO_PROJECT_DIR=/path/to/repo -- lievo mcp
-```
+Claude Code sets `CLAUDE_PROJECT_DIR`, which lievo reads, so the MCP server needs no extra configuration.
 
 ### pi
 
-pi has no built-in MCP support (unverified here); it talks to lievo through the [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) package. Add an `mcpServers` entry to the shared user-global config so one registration covers every repo:
+- **MCP:** pi ships built-in MCP support. [quickstart](quickstart.md#pi) has the registration command, and pi's own `docs/mcp.md` describes the config. Pi names lievo's tools `mcp__lievo__<tool>`. By default pi reaches MCP tools through codemode, not as directly declared tools.
+- **Third-party alternative:** [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) is a separate npm package with its own config format. Its docs are the source of truth for that config. Use one of the two options, not both.
+- **Skill:** `~/.agents/skills/lievo/` (see above).
 
-```jsonc
-// ~/.config/mcp/mcp.json
-{
-  "mcpServers": {
-    "lievo": { "command": "lievo", "args": ["mcp"] }
-  }
-}
-```
+### Codex CLI
 
-Start pi from inside the repo, or pin the working directory by adding `"cwd": "/path/to/repo"` to the entry (the `cwd` field is a pi-mcp-adapter setting, unverified here).
-
-### Cursor (for completeness)
-
-Cursor does not start MCP servers in the workspace folder and has no `cwd` variable, so the repo path must be named explicitly, per repo, in `.cursor/mcp.json` with `LIEVO_PROJECT_DIR`. See [quickstart.md](quickstart.md#cursor).
-
-## Install the lievo skill
-
-The skill lives at `skills/lievo/` in this repository. Copy the directory into the agent's skill location. Destination paths below are each agent's convention, not verified by lievo's code.
-
-### Claude Code
-
-```bash
-cp -r skills/lievo ~/.claude/skills/        # user-wide
-# or, project-local (committed with the repo):
-cp -r skills/lievo .claude/skills/
-```
-
-Claude Code loads it automatically when the task matches the skill's name and description.
+Start Codex from inside the repo, or pin the repo with `LIEVO_PROJECT_DIR` as described in [quickstart](quickstart.md#codex-cli). Codex has no skill loader verified here, so use the [fallback](#agents-without-a-verified-skill-loader).
 
 ### Hermes Agent
 
-```bash
-cp -r skills/lievo ~/.hermes/skills/
-```
-
-It is then available to any session via the skill loader.
-
-### pi
-
-pi has no first-class skill loader (unverified here). Two options, in order of preference:
-
-1. **Include the skill in the agent's instructions.** Reference `skills/lievo/SKILL.md` from a project instruction file so the agent reads it at task start.
-2. **Rely on the MCP tools alone.** `lievo_explore`'s own tool description carries the core usage guidance (batch files into one call, the `scope`/`files`/`bundle` modes, the continuation contract). The skill makes the agent *reliably* pick the right query and parse the JSON; without it the agent may still reach for grep first.
-
-### Codex CLI
-
-Codex has no first-class skill loader either (unverified here). As with pi, include `skills/lievo/SKILL.md` in `AGENTS.md` or another project instructions file, or rely on the MCP tools. The skill's command map is exactly what `AGENTS.md` would otherwise have to repeat.
+- **Skill:** install it as shown above. The skill is written in agent-neutral terms ("shell", "file search", "file read"). In Hermes those correspond to the `terminal`, `search_files`, and `read_file` tools (the names the skill's earlier Hermes version used; not re-verified here).
+- **Frontmatter:** the shipped `SKILL.md` has no Hermes-only metadata (`metadata.hermes`, `related_skills`, `platforms`). Hermes does not need it to load the skill. If you want Hermes tags or related skills, add them to your installed copy.
+- **MCP:** register `lievo mcp` with Hermes following its MCP documentation. That registration is not verified here.
 
 ## Verify
 
@@ -97,9 +86,11 @@ From inside a registered repo:
 
 ```bash
 lievo doctor          # expect: registered: true, index: current
-lievo admin status    # expect: entity counts + a "Summary coverage:" line
+lievo admin status    # expect: entity counts and a "Summary coverage:" line
 ```
 
-Then ask the agent a structural question — *"what depends on `src/storage/sqlite.rs`?"* — and confirm it calls lievo rather than only grepping.
+Then ask the agent a structural question, such as "what depends on `src/storage/sqlite.rs`?", and confirm it calls lievo rather than only searching files.
 
-**Reading the right repository.** If the agent reads the wrong repo, check `LIEVO_PROJECT_DIR` (it wins over the working directory) and that the project is single-repo; `lievo doctor` names the fix for each case.
+**Reading the right repository.** If the agent reads the wrong repo, check `LIEVO_PROJECT_DIR` (it wins over the working directory). `lievo doctor` names the fix for each case.
+
+For measured evidence on when lievo helps, see [benchmarks.md](benchmarks.md).
