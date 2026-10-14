@@ -112,15 +112,21 @@ Rules:
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
 - On the first release PR, check the `CHANGELOG.md` diff: one intro block only, a `0.2.0` section containing only commits after the `v0.1.0` tag, and no duplicated content. If the output is wrong, fix the section by hand on the release PR branch before merging.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
-- The first release-plz release is `0.2.0`. The crate has never been published, so `Cargo.toml` was set to `0.2.0` by hand in the PR for #40 (the only manual version bump). Without that bump release-plz would fail: `release-pr` bails with "not found in the registry, but the git tag v0.1.0 exists". With `0.2.0` there is no matching tag, so release-plz opens a release PR for the unpublished `0.2.0` (changelog only, version unchanged) and publishes it when that PR is merged. Check that the release PR keeps `0.2.0` and does not re-tag or re-publish `0.1.0` before merging it.
-- release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`, and it rewrites the release PR branch on every push to `main`, so a hand edit there is lost. Bump the heading in a normal PR to `main` before merging the release PR (see "Regenerating third-party notices"). Commits on `main` survive release-plz's rewrites. Check that the heading matches the version in the release PR.
+- The first crates.io release is `0.2.0`. Check that the release PR keeps that version and does not re-tag or re-publish `0.1.0`.
+- release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`. A unit test (`test_third_party_notices_heading_matches_package_version` in `src/lib.rs`) fails the Check job until the heading matches `Cargo.toml`, so the release PR cannot merge with a stale heading. Bump the heading on the release PR branch (see "Regenerating third-party notices"). release-plz rewrites that branch on every push to `main`, so merge promptly after the bump.
+
+### If a release fails partway
+
+- **Published but not tagged** (crates.io has `X.Y.Z`, there is no `vX.Y.Z` tag): push the tag by hand at the release commit, the merge commit of the release PR on `main`: `git tag vX.Y.Z <sha> && git push origin vX.Y.Z`. The tag starts `release.yml`.
+- **Tagged but no GitHub Release**: re-run the failed `Release` workflow run for that tag in the Actions UI. `release.yml` has only tag triggers. If that run is gone, delete the remote tag and push it again.
+- **No pre-release channel**: there is no release candidate or dry-run tag. Validation is the CI `Check` job plus `cargo publish --dry-run`, which the operator runs on the release PR before merging it.
 
 ### One-time setup (operator)
 
 These steps are done once by a maintainer with admin rights on the repository. They are not automated.
 
 1. **crates.io token**: create an API token with the `publish-new` and `publish-update` scopes, and store it as the repository secret `CARGO_REGISTRY_TOKEN`. This is token-based publishing, not trusted publishing (OIDC).
-2. **GitHub token for release-plz**: create a fine-grained token with `Contents: read and write` and `Pull requests: read and write` on this repository, and store it as the repository secret `RELEASE_PLZ_TOKEN`. The default `GITHUB_TOKEN` cannot be used: tags and PRs it creates do not trigger other workflows, so the `v*` tag would never start `release.yml`. (Alternatively, point the workflow at the existing `PERSONAL_ACCESS_TOKEN` secret.)
+2. **GitHub token for release-plz**: create a fine-grained token with `Contents: read and write` and `Pull requests: read and write` on this repository, and store it as the repository secret `RELEASE_PLZ_TOKEN`. The default `GITHUB_TOKEN` cannot be used: tags and PRs it creates do not trigger other workflows, so the `v*` tag would never start `release.yml`. 
 3. **Allow Actions to open PRs**: in Settings → Actions → General → Workflow permissions, enable "Allow GitHub Actions to create and approve pull requests".
 
 ### Regenerating third-party notices
@@ -141,7 +147,7 @@ The file also carries two hand-maintained sections that `cargo-about` does not g
 
 **When a `-sys` crate is upgraded** (libgit2-sys, onig_sys, libz-sys, libsqlite3-sys, or any new one), re-verify the bundled-native section against the new registry source (`~/.cargo/registry/src/<registry>/<crate>-<version>/...`): the bundled code's licence may have changed, and the `-sys` crate's own crates.io metadata (which `cargo-about` reads) does not reflect the bundled code's licence. Also confirm the OpenSSL-headers statement in that section still holds for the new libgit2-sys version (it is only compiled when `git2`'s `https` feature is enabled on Linux, which lievo does not enable).
 
-The `## lievo vX.Y.Z` heading in the file carries the current version. Bump it in a normal PR to `main` before merging the release PR (never on the release PR branch, which release-plz overwrites).
+The `## lievo vX.Y.Z` heading in the file must match `Cargo.toml` (enforced by a unit test). release-plz does not update it, so bump it on the release PR branch; the Check job stays red until you do. If a push to `main` rewrites that branch, bump it again.
 
 ### Smoke test after a release
 

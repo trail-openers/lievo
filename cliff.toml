@@ -1,7 +1,13 @@
 [changelog]
+# Must match the intro of CHANGELOG.md exactly: release-plz prepends new releases
+# below the existing header, and this keeps the rendered file to one intro block.
 header = """
-# Changelog\n
-All notable changes to this project will be documented in this file.\n
+# Changelog
+
+All notable changes to lievo will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
 """
 body = """
 {% if version %}\
@@ -23,6 +29,12 @@ trim = true
 conventional_commits = true
 filter_unconventional = true
 split_commits = false
+# Render historical subjects consistently: `type(#N): msg` becomes `type: msg (#N)`, and
+# the `(work)` scope is dropped, so no scope noise appears in CHANGELOG.md.
+commit_preprocessors = [
+    { pattern = '^(\w+)\(#(\d+)\): (.*)', replace = "$1: $3 (#$2)" },
+    { pattern = '^(\w+)\(work\): ', replace = "$1: " },
+]
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
