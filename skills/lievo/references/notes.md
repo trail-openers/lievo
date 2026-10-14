@@ -57,7 +57,7 @@ Summarization is optional. lievo never downloads, pins, or bundles a model. The 
 | `llama-server` | A llama.cpp server at `apfel_endpoint`. | `GET /health` |
 | `generic` | Any OpenAI-compatible server at `apfel_endpoint`. | `GET /v1/models`, then `GET /health` |
 
-All three send chat requests to `POST {apfel_endpoint}/v1/chat/completions`. A probe that returns a model-list shape or a `{status: ...}` body is accepted. A 200 with the wrong shape falls back to the no-summarizer path. It is never a hard error.
+When `apfel_endpoint` is set, all three send chat requests to `POST {apfel_endpoint}/v1/chat/completions` (apfel without an endpoint uses the apfel CLI on PATH). A probe that returns a model-list shape or a `{status: ...}` body is accepted. A 200 with the wrong shape falls back to the no-summarizer path. It is never a hard error.
 
 ### What a backend must support
 
@@ -110,9 +110,8 @@ See [docs/using-with-agent.md](https://github.com/trail-openers/lievo/blob/main/
 |---|---|
 | `~/.lievo/lievo.db` | SQLite database: projects, repos, entities, relationships, summaries, insights. |
 | `~/.lievo/indices/<repo-hash>/` | Per-repo tree-sitter and vector index. |
-| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights (about 16 MB), shared with other Hugging Face tools. |
+| `~/.cache/huggingface/hub/` (or `HF_HUB_CACHE` / `HF_HOME/hub`) | Embedding model weights (downloaded on first semantic use), shared with other Hugging Face tools. |
 | `<repo>/.lievo/config.yaml` | Optional per-repo config. |
-| `~/.lievo/debug-import-resolution.log` | Optional import-resolution debug log (1 MB cap). |
 
 `lievo doctor` shows the database path actually in use.
 

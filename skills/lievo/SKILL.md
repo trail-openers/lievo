@@ -2,9 +2,9 @@
 name: lievo
 description: "Query a repo's structural code map with lievo (impact, deps, dependents, entities, subsystems). Use when asked what depends on X, what breaks if Y changes, or where a symbol lives in an indexed repo (rs, py, js/jsx/mjs, ts/tsx, go)."
 version: 1.1.0
-license: AGPL-3.0
+license: AGPL-3.0-only
 metadata:
-  author: Janni Turunen (trail-openers)
+  author: trail-openers/lievo
 ---
 
 # lievo
@@ -58,7 +58,7 @@ lievo doctor                                # expect: registered: true, index: c
 |---|---|
 | Is lievo working here? | `lievo doctor` (`lievo --format json doctor` for scripts) |
 | Register repo + project | `lievo admin add-repo <path> [<project>]` |
-| Projects | `lievo admin create-project <name>` / `list-projects` / `delete-project <name>` |
+| Projects | `lievo admin create-project <name>` / `list-projects` / `delete-project <name>` (destructive: ask the user first) |
 | Repos, status, coverage, DB info | `lievo admin list-repos [<project>]` / `status [<project>]` / `coverage` / `info` |
 | Build or update the index | `lievo refresh <project>` (`--no-summarize`, `--full`, `--force`, `--no-ignore`) |
 | Find symbols (keyword) | `lievo query entities --project P "term"` |

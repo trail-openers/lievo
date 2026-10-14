@@ -76,7 +76,7 @@ Start Codex from inside the repo, or pin the repo with `LIEVO_PROJECT_DIR` as de
 
 ### Hermes Agent
 
-- **Skill:** install it as shown above. The skill is written in agent-neutral terms ("shell", "file search", "file read"). In Hermes those correspond to the `terminal`, `search_files`, and `read_file` tools (the names the skill's earlier Hermes version used; not re-verified here).
+- **Skill:** install it as shown above. The skill is written in agent-neutral terms ("shell", "file search", "file read"). In Hermes, the equivalents are tools such as `terminal`, `search_files`, and `read_file` (e.g.).
 - **Frontmatter:** the shipped `SKILL.md` has no Hermes-only metadata (`metadata.hermes`, `related_skills`, `platforms`). Hermes does not need it to load the skill. If you want Hermes tags or related skills, add them to your installed copy.
 - **MCP:** register `lievo mcp` with Hermes following its MCP documentation. That registration is not verified here.
 
