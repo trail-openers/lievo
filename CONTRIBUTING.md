@@ -100,22 +100,24 @@ When splitting work from `docs/spec.md` into issues:
 
 ## Releasing
 
-Releases are automated with [release-plz](https://release-plz.dev) and built by cargo-dist. Never bump the version in `Cargo.toml` or edit `CHANGELOG.md` by hand.
+Releases are automated with [release-plz](https://release-plz.dev) and built by cargo-dist. Never bump the version in `Cargo.toml` or edit `CHANGELOG.md` by hand (the initial 0.2.0 version was set once to bootstrap crates.io publishing).
 
 1. **Merge feature PRs to `main`** with Conventional Commit subjects (see above). Every push to `main` runs the `Release-plz` workflow (`.github/workflows/release-plz.yml`).
-2. **release-plz opens or updates a release PR** (`release-pr` job). It bumps `Cargo.toml` and `Cargo.lock` from the commits since the last tag (`release-plz.toml`: `feat` bumps minor, `fix` bumps patch while the crate is 0.x) and prepends the generated section to `CHANGELOG.md` (git-cliff, `cliff.toml`).
+2. **release-plz opens or updates a release PR** (`release-pr` job). It bumps `Cargo.toml` and `Cargo.lock` from the commits since the last tag (`release-plz.toml`: `feat` bumps minor, `fix` bumps patch while the crate is 0.x) and prepends the generated section to `CHANGELOG.md` (git-cliff, `cliff.toml`). The first release PR is the exception: it does not bump anything. It publishes the existing 0.2.0 with its changelog.
 3. **Merge the release PR.** The `release` job publishes the crate to crates.io and pushes the `v<version>` tag (no GitHub Release from release-plz; `git_release_enable = false`).
 4. **cargo-dist builds the GitHub Release.** The `v*` tag triggers `.github/workflows/release.yml`, which builds the binaries and installers for all five targets and creates the GitHub Release.
 
 Rules:
 
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
+- Keep the release PR's branch named `release-plz-*` (release-plz creates it). Do not rename, recreate, or hand-create it: the `release` job publishes only for merged `release-plz-*` PRs.
+- After merging a release PR, open the `Release-plz` run for the merge commit and check its log confirms the crate was published. A skipped release exits green, so a green check alone does not prove a publish.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
 
 ### If a release fails partway
 
 - **Published but not tagged** (crates.io has `X.Y.Z`, there is no `vX.Y.Z` tag): push the tag by hand at the release commit, the merge commit of the release PR on `main`: `git tag vX.Y.Z <sha> && git push origin vX.Y.Z`. The tag starts `release.yml`.
-- **Tagged but no GitHub Release**: re-run the failed `Release` workflow run for that tag in the Actions UI. `release.yml` has only tag triggers. If that run is gone, delete the remote tag and push it again.
+- **Tagged but no GitHub Release**: re-run the `Release` workflow run that the tag push started, in the Actions UI. `release.yml` is triggered by version tags and by `pull_request` (plan only, no publish). It has no `workflow_dispatch`, so re-running that tag's run is the recovery path. If that run is gone, delete the remote tag and push it again.
 - **No pre-release channel**: there is no release candidate or dry-run tag. Validation is the CI `Check` job plus `cargo publish --dry-run`, which the operator runs on the release PR before merging it.
 
 ### One-time setup (operator)
@@ -152,10 +154,12 @@ Once the GitHub Release is published, smoke test the published shell installer o
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/trail-openers/lievo/releases/latest/download/lievo-installer.sh | sh
 lievo --version
 # Verify MCP responds to an initialize request:
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1
+set -o pipefail
+response=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0.0"}}}' | timeout 10 lievo mcp 2>/dev/null | head -1)
+echo "$response" | grep -q '"serverInfo"' || { echo "MCP initialize failed: $response" >&2; exit 1; }
 ```
 
-Both should print `lievo` followed by the released version (e.g. `lievo 0.2.0`) and a JSON-RPC response with `serverInfo`.
+The first command should print `lievo` followed by the released version (e.g. `lievo 0.2.0`). The script exits non-zero if the MCP response lacks `serverInfo`.
 
 ### Runner allocation per target
 
