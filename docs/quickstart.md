@@ -107,15 +107,17 @@ Automatic names (no explicit name) use the first of these that is free:
 
 A repo with no remote identity (no origin lievo can normalise and no `identity:` key) is named from its directory, with `-2`, `-3`, … suffixes when that is taken.
 
-A second live checkout of a remote that is already registered gets its own project named `<repo>@<dir>` (for example `lievo@feature-x`), even when its directory name is free, so the two checkouts do not share a project.
+A second live checkout of a remote that is already registered gets its own project named `<repo>@<dir>` (for example `lievo@feature-x`), even when its directory name is free, so the two checkouts do not share a project. A later live checkout with the same directory name joins that `<repo>@<dir>` project (if that name is taken by another identity, the next free suffix is used).
 
 Explicit names (`lievo admin add-repo <path> <project>`) are used as given:
 
 - the name is free → a new project;
-- the name is held by a repo with a different remote identity → registration is refused (only when the new checkout has an identity); pick another name or register the path under its own project;
+- Refused if the named project holds any repo with a different remote identity, which covers mixed projects (only when the new checkout has an identity); pick another name or register the path under its own project;
 - the name is held by the same remote, or by a repo with no stored identity → the checkout joins that project as an additional repo.
 
-`lievo mcp` registers the repo it is started in under a derived name. Its optional `<project>` argument selects a project that is already registered; it does not name a new one.
+The name is used as given (surrounding whitespace is trimmed).
+
+Without an argument, `lievo mcp` registers the repository it is started in under a derived name. With `<project>`, it serves that already-registered project and registers nothing.
 
 To set the remote identity lievo uses for a repo yourself, add an `identity:` key to `<repo>/.lievo/config.yaml` in the form `host/owner/repo`:
 
@@ -123,11 +125,13 @@ To set the remote identity lievo uses for a repo yourself, add an `identity:` ke
 identity: github.com/trail-openers/lievo
 ```
 
+The `identity:` key is read from the checkout itself, so a committed config in a repository you don't control can make it join an existing project under that identity. It never moves an existing registration, but treat repo-supplied `identity:` values as untrusted. See [Known limitations](data-storage.md#known-limitations).
+
 When a checkout has moved, lievo does one of the following:
 
-- automatically named, identity from the origin remote, old path gone → the existing registration's path is updated and its project, index and status are kept (no reindex);
+- automatically named, identity from the origin remote, old path gone → the existing registration's path is updated and its project, index and status are kept (no full reindex);
 - an explicit project name, or an `identity:` override → no move (the explicit-name rules above apply, or a fresh project is created);
-- the move can't proceed (e.g. the index is in use by another process) → a notice is printed and the path is registered as a new project;
+- the move can't proceed (e.g. the index is in use by another process) → a notice is printed, the original registration is left unchanged, and the path is registered as a new project;
 - the state is unclear (unknown database row state, or index files left split or leftover at the new path) → an error with recovery steps, nothing indexed. Follow the printed recovery steps, then re-run.
 
 ## Where data lives

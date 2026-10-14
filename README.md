@@ -19,7 +19,7 @@ lievo indexes how your code fits together — modules, functions, and what calls
 
 ## What lievo returns
 
-The example below was produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo mcp` and `lievo admin add-repo` both pick the project name from the repo's git remote and checkout (see [Project names](docs/quickstart.md#project-names)) — and run the same command with your project's name to reproduce it.
+The example below was produced by running lievo at commit `d5c45c6` (2026-09-30) against the lievo repository itself, registered as project `lievo`. Index any repo you have — `lievo admin add-repo` and `lievo mcp` (when started without a project argument) pick the project name from the repo's git remote and checkout (see [Project names](docs/quickstart.md#project-names)) — and run the same command with your project's name to reproduce it.
 
 ```bash
 lievo query entities --project lievo "storage"
