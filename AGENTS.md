@@ -192,10 +192,12 @@ When a file exceeds its budget OR has 3+ distinct responsibilities:
 All commits use [Conventional Commits](https://www.conventionalcommits.org/) format:
 
 ```
-feat(#123): brief description
-fix(#45): brief description
-docs(#78): brief description
+feat: brief description (#123)
+fix: brief description (#45)
+docs: brief description (#78)
 ```
+
+**No issue number in the scope.** Use `type: description` (or `type(area): description` with an alphabetic area). Reference the issue at the end of the subject or in a `Closes #123` trailer. Do NOT write `feat(#123):`: release-plz/git-cliff build the changelog from these subjects and mangle numeric scopes.
 
 **Commit Types**:
 - `feat`: New feature
@@ -394,10 +396,10 @@ git push
 
 ### In Commit Messages
 
-Always reference the issue:
+Reference the issue in the body trailer, not the scope (release-plz/git-cliff mangle issue numbers in scopes):
 
 ```
-feat(#123): add json output support
+feat: add json output support
 
 Closes #123
 ```
