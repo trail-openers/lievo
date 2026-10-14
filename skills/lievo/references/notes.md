@@ -44,6 +44,7 @@ Per-repo settings. It is optional and lives in the checkout. **It is untrusted f
 ### Security
 
 - **Repo-supplied config can point summaries at a host you did not choose.** A `.lievo/config.yaml` in an untrusted repo can set `apfel_endpoint` or `summarizer_backend`. A `refresh` that summarizes then sends source code to that endpoint, and sends `LIEVO_SUMMARIZER_TOKEN` as a bearer token if the variable is set. Before refreshing a repo you don't control, read its `.lievo/config.yaml`, or refresh with `--no-summarize`, which contacts no summarizer.
+- **Automatic indexing never summarizes.** The background index that `lievo mcp` starts runs with `no_summarize` set, so it never contacts a repo-configured endpoint. Only an explicit `lievo refresh` without `--no-summarize`, or `lievo summarize`, can. `LIEVO_NO_REFRESH=1` disables automatic indexing entirely.
 - **Use `https` for non-loopback endpoints.** lievo accepts plain `http` URLs, and it warns when a summary run sends source to a non-loopback host. Loopback endpoints do not trigger the warning.
 - **`identity:` in repo config is untrusted too.** It sets the project's identity key, which affects project naming and whether a moved checkout is re-attached to an existing project. See [data-storage.md#known-limitations](https://github.com/trail-openers/lievo/blob/main/docs/data-storage.md#known-limitations).
 

@@ -17,46 +17,30 @@ Register the server once and install the skill once. Every repo the agent works 
 
 ## Install the skill
 
-Get the skill from the repository, not from a lievo checkout, so the steps work anywhere. Clone the repo to a temporary directory. This uses `main`.
+Install from the repository, not from a lievo checkout, so the steps work anywhere. The command clones into a fresh temporary directory, copies `skills/lievo` to your agent's destination, and deletes the clone. Each step runs only if the previous one succeeded. Replace `<dest>` with the destination from the list below:
 
 ```bash
-git clone --depth 1 https://github.com/trail-openers/lievo /tmp/lievo-src
+src=$(mktemp -d) && git clone --depth 1 https://github.com/trail-openers/lievo "$src" && mkdir -p <dest> && cp -R "$src/skills/lievo/." <dest>/ && rm -rf "$src"
 ```
 
-Then copy `skills/lievo` into your agent's skill location.
+Destinations:
 
-**Claude Code** (user-wide):
-```bash
-mkdir -p ~/.claude/skills && cp -R /tmp/lievo-src/skills/lievo ~/.claude/skills/
-```
-Claude Code loads the skill when a task matches its name and description. For a project-local copy, use `.claude/skills/` in the repo root instead.
+- **Claude Code:** `~/.claude/skills/lievo` (user-wide), or `.claude/skills/lievo` in the repo root (project-local). Claude Code loads the skill when a task matches its name and description.
+- **pi:** `~/.agents/skills/lievo` (pi scans `~/.agents/skills/`, per pi's `docs/skills.md`).
+- **Hermes Agent:** `~/.hermes/skills/lievo`.
+- **Agents without a verified skill loader:** `~/.local/share/lievo`, see [the fallback](#agents-without-a-verified-skill-loader).
 
-**pi** (pi scans `~/.agents/skills/`, per pi's `docs/skills.md`):
-```bash
-mkdir -p ~/.agents/skills && cp -R /tmp/lievo-src/skills/lievo ~/.agents/skills/
-```
-
-**Hermes Agent**:
-```bash
-mkdir -p ~/.hermes/skills && cp -R /tmp/lievo-src/skills/lievo ~/.hermes/skills/
-```
-See [Hermes Agent](#hermes-agent) for Hermes-specific notes.
+To update, re-run the same command. To pin a fixed version, add `--branch vX.Y.Z` to the `git clone` once a release includes the skill.
 
 ### Agents without a verified skill loader
 
-For Codex CLI, Cursor, VS Code, or any agent whose skill loading is not verified here, copy the skill to a stable path and reference that path from the agent's instructions file. Do not reference `skills/lievo/` relative to your project, because that directory does not exist in your project.
+For Codex CLI, Cursor, VS Code, or any agent whose skill loading is not verified here, install to `~/.local/share/lievo` with the command above, then reference that path from the agent's instructions file. Do not reference `skills/lievo/` relative to your project, because that directory does not exist in your project.
 
-```bash
-mkdir -p ~/.local/share/lievo && cp -R /tmp/lievo-src/skills/lievo ~/.local/share/
-```
-
-Then add a line to your instructions file, such as `AGENTS.md`:
+Add a line to your instructions file, such as `AGENTS.md`:
 
 ```markdown
 For structural code questions (what depends on X, what breaks if Y changes), follow ~/.local/share/lievo/SKILL.md.
 ```
-
-Re-run the clone and copy to update the skill.
 
 ## Per-agent notes
 
@@ -76,9 +60,13 @@ Start Codex from inside the repo, or pin the repo with `LIEVO_PROJECT_DIR` as de
 
 ### Hermes Agent
 
-- **Skill:** install it as shown above. The skill is written in agent-neutral terms ("shell", "file search", "file read"). In Hermes, the equivalents are tools such as `terminal`, `search_files`, and `read_file` (e.g.).
-- **Frontmatter:** the shipped `SKILL.md` has no Hermes-only metadata (`metadata.hermes`, `related_skills`, `platforms`). Hermes does not need it to load the skill. If you want Hermes tags or related skills, add them to your installed copy.
-- **MCP:** register `lievo mcp` with Hermes following its MCP documentation. That registration is not verified here.
+For Hermes's skill and MCP setup, see Hermes Agent's own documentation. The skill destination is listed above.
+
+## Automatic indexing and repo config
+
+`lievo mcp` starts a background index when a repo is new or its HEAD has moved. That background indexing never summarizes, so it never contacts a repo-configured endpoint. Only an explicit run can: `lievo refresh` without `--no-summarize`, or `lievo summarize`. Set `LIEVO_NO_REFRESH=1` to disable automatic indexing entirely.
+
+A repo's `.lievo/config.yaml` is inside the checkout, so treat it as untrusted for repos you don't control. See [the security notes](../skills/lievo/references/notes.md#configuration).
 
 ## Verify
 
