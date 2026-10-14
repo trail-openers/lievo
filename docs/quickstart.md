@@ -99,14 +99,21 @@ Open your repo in your agent and ask a structural question — "where is X imple
 
 Each repository is registered under a project name. lievo picks it for you when you register a repo, and you can set it explicitly.
 
-For a new registration without an explicit name, lievo uses the first of these that is free:
+Automatic names (no explicit name) use the first of these that is free:
 
 - the checkout's directory name (usually the repo name);
-- `<owner>/<repo>`, taken from the remote identity, when the directory name is held by a different remote; then `<owner>/<repo>-2`, `<owner>/<repo>-3`, … when that is also taken.
+- `<owner>/<repo>`, from the remote identity, when the directory name is already a project name;
+- `<owner>/<repo>-2`, `<owner>/<repo>-3`, … when that is taken too.
 
-A second live checkout of a remote that is already registered gets its own project named `<repo>@<dir>` (for example `lievo@feature-x`), even when its directory name is free, so the two checkouts do not share a project. Names are otherwise picked as above.
+A repo with no remote identity (no origin lievo can normalise and no `identity:` key) is named from its directory, with `-2`, `-3`, … suffixes when that is taken.
 
-An explicit name (`lievo admin add-repo <path> <project>`) is used as given. If that name is already held by a repo with a different remote, registration is refused; pick another name or register the path under its own project. If the name is held by the same remote, the checkout joins that project.
+A second live checkout of a remote that is already registered gets its own project named `<repo>@<dir>` (for example `lievo@feature-x`), even when its directory name is free, so the two checkouts do not share a project.
+
+Explicit names (`lievo admin add-repo <path> <project>`) are used as given:
+
+- the name is free → a new project;
+- the name is held by a repo with a different remote identity → registration is refused (only when the new checkout has an identity); pick another name or register the path under its own project;
+- the name is held by the same remote, or by a repo with no stored identity → the checkout joins that project as an additional repo.
 
 `lievo mcp` registers the repo it is started in under a derived name. Its optional `<project>` argument selects a project that is already registered; it does not name a new one.
 
@@ -116,9 +123,12 @@ To set the remote identity lievo uses for a repo yourself, add an `identity:` ke
 identity: github.com/trail-openers/lievo
 ```
 
-A moved or re-cloned checkout of the same remote keeps its project, index, lock and status. When the old path is gone, lievo updates the stored path of the existing registration instead of reindexing. This applies to automatically named registrations whose identity comes from the origin remote. A registration with an explicit name, or with an `identity:` override, registers the new path as a fresh project instead. If lievo cannot safely tell that the checkout moved (for example, when the stored state is unclear), it reports an error rather than guessing.
+When a checkout has moved, lievo does one of the following:
 
-A repo with neither an origin remote nor an `identity:` key has no remote identity, so it is named from its directory and gets `-2`, `-3`, … suffixes when that name is taken.
+- automatically named, identity from the origin remote, old path gone → the existing registration's path is updated and its project, index and status are kept (no reindex);
+- an explicit project name, or an `identity:` override → no move (the explicit-name rules above apply, or a fresh project is created);
+- the move can't proceed (e.g. the index is in use by another process) → a notice is printed and the path is registered as a new project;
+- the state is unclear (unknown database row state, or index files left split or leftover at the new path) → an error with recovery steps, nothing indexed. Follow the printed recovery steps, then re-run.
 
 ## Where data lives
 
