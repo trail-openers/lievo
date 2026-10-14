@@ -35,6 +35,8 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT OR Apache-2.0
 ## base64 v0.22.1
 **Licence:** MIT OR Apache-2.0
+## base64 v0.23.1
+**Licence:** MIT OR Apache-2.0
 ## bitflags v2.11.0
 **Licence:** MIT OR Apache-2.0
 ## block-buffer v0.12.0
@@ -51,11 +53,11 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT OR Apache-2.0
 ## chrono v0.4.45
 **Licence:** MIT OR Apache-2.0
-## clap v4.6.6
+## clap v4.6.7
 **Licence:** MIT OR Apache-2.0
-## clap_builder v4.6.6
+## clap_builder v4.6.7
 **Licence:** MIT OR Apache-2.0
-## clap_derive v4.6.4
+## clap_derive v4.6.7
 **Licence:** MIT OR Apache-2.0
 ## clap_lex v1.0.0
 **Licence:** MIT OR Apache-2.0
@@ -65,7 +67,7 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT
 ## console v0.15.11
 **Licence:** MIT
-## console v0.16.3
+## console v0.16.6
 **Licence:** MIT
 ## const-oid v0.10.2
 **Licence:** Apache-2.0 OR MIT
@@ -185,13 +187,13 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT OR Apache-2.0
 ## ident_case v1.0.1
 **Licence:** MIT OR Apache-2.0
-## ignore v0.4.30
+## ignore v0.4.33
 **Licence:** Unlicense OR MIT
 ## indexmap v2.13.0
 **Licence:** Apache-2.0 OR MIT
 ## indicatif v0.17.11
 **Licence:** MIT
-## indicatif v0.18.4
+## indicatif v0.18.6
 **Licence:** MIT
 ## is_terminal_polyfill v1.70.2
 **Licence:** MIT OR Apache-2.0
@@ -337,7 +339,7 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT OR Apache-2.0
 ## serde_json v1.0.151
 **Licence:** MIT OR Apache-2.0
-## serde_spanned v1.1.1
+## serde_spanned v1.1.2
 **Licence:** MIT OR Apache-2.0
 ## serde_yaml_ng v0.10.0
 **Licence:** MIT
@@ -367,27 +369,27 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT OR Apache-2.0
 ## syn v3.0.5
 **Licence:** MIT OR Apache-2.0
-## thiserror v2.0.20
+## thiserror v2.0.21
 **Licence:** MIT OR Apache-2.0
-## thiserror-impl v2.0.20
+## thiserror-impl v2.0.21
 **Licence:** MIT OR Apache-2.0
 ## thread_local v1.1.9
 **Licence:** MIT OR Apache-2.0
 ## tokenizers v0.21.4
 **Licence:** Apache-2.0
-## tokio v1.53.1
+## tokio v1.53.2
 **Licence:** MIT
 ## tokio-macros v2.7.0
 **Licence:** MIT
 ## tokio-util v0.7.18
 **Licence:** MIT
-## toml v1.1.6+spec-1.1.0
+## toml v1.1.8+spec-1.1.0
 **Licence:** MIT OR Apache-2.0
-## toml_datetime v1.1.1+spec-1.1.0
+## toml_datetime v1.1.2+spec-1.1.0
 **Licence:** MIT OR Apache-2.0
-## toml_parser v1.1.3+spec-1.1.0
+## toml_parser v1.1.5+spec-1.1.0
 **Licence:** MIT OR Apache-2.0
-## toml_writer v1.1.2+spec-1.1.0
+## toml_writer v1.1.3+spec-1.1.0
 **Licence:** MIT OR Apache-2.0
 ## tracing v0.1.44
 **Licence:** MIT
@@ -429,17 +431,17 @@ when a `-sys` crate is upgraded — see the same section of CONTRIBUTING.md.
 **Licence:** MIT
 ## untrusted v0.9.0
 **Licence:** ISC
-## ureq v3.3.0
+## ureq v3.4.2
 **Licence:** MIT OR Apache-2.0
-## ureq-proto v0.6.0
+## ureq-proto v0.6.4
 **Licence:** MIT OR Apache-2.0
-## usearch v2.26.2
+## usearch v2.26.4
 **Licence:** Apache-2.0
 ## utf8-zero v0.8.1
 **Licence:** MIT OR Apache-2.0
 ## utf8parse v0.2.2
 **Licence:** Apache-2.0 OR MIT
-## uuid v1.26.1
+## uuid v1.28.0
 **Licence:** Apache-2.0 OR MIT
 ## walkdir v2.5.0
 **Licence:** Unlicense OR MIT
