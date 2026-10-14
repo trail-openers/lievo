@@ -26,7 +26,7 @@ cargo install --git https://github.com/trail-openers/lievo.git
 
 ## Connect your agent
 
-Register lievo once, at user level — one line per agent, and it works in every git repository (Cursor is the exception; see below). `lievo mcp` resolves the repository it is launched in, registers it on first use, and indexes it automatically in the background.
+Register lievo once, at user level — one line per agent, and it works in every git repository (Cursor is the exception; see below). `lievo mcp` resolves the repository it is launched in, registers it on first use, and indexes it automatically in the background. This section covers **registering the MCP server**. To also install the **lievo skill** (the guide that teaches the agent how to use the map — query loop, JSON contracts, pitfalls) and the per-agent skill-install steps, see [Using lievo with your agent](using-with-agent.md).
 
 Lievo works alongside your agent's built-in search and read tools; it does not replace them.
 
