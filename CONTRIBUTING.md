@@ -111,7 +111,7 @@ Rules:
 
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
-- The first release-plz release is `0.2.0`, derived from the existing `v0.1.0` tag. release-plz must not re-tag or re-publish `0.1.0`; check that the release PR proposes `0.2.0` before merging it.
+- The first release-plz release is `0.2.0`. The crate has never been published, so `Cargo.toml` was set to `0.2.0` by hand in the PR for #40 (the only manual version bump). Without that bump release-plz would fail: `release-pr` bails with "not found in the registry, but the git tag v0.1.0 exists". With `0.2.0` there is no matching tag, so release-plz opens a release PR for the unpublished `0.2.0` (changelog only, version unchanged) and publishes it when that PR is merged. Check that the release PR keeps `0.2.0` and does not re-tag or re-publish `0.1.0` before merging it.
 - release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`. Update it on the release PR branch before merging (see "Regenerating third-party notices").
 
 ### One-time setup (operator)
