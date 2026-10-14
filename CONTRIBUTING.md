@@ -110,10 +110,7 @@ Releases are automated with [release-plz](https://release-plz.dev) and built by 
 Rules:
 
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
-- On the first release PR, check the `CHANGELOG.md` diff: one intro block only, a `0.2.0` section containing only commits after the `v0.1.0` tag, and no duplicated content. If the output is wrong, fix the section by hand on the release PR branch before merging.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
-- The first crates.io release is `0.2.0`. Check that the release PR keeps that version and does not re-tag or re-publish `0.1.0`.
-- release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`. A unit test (`test_third_party_notices_heading_matches_package_version` in `src/lib.rs`) fails the Check job until the heading matches `Cargo.toml`, so the release PR cannot merge with a stale heading. Bump the heading on the release PR branch (see "Regenerating third-party notices"). release-plz rewrites that branch on every push to `main`, so merge promptly after the bump.
 
 ### If a release fails partway
 
@@ -146,8 +143,6 @@ The file also carries two hand-maintained sections that `cargo-about` does not g
 - **Bundled native components** — the licences of C/C++ sources that `-sys` crates bundle under their own (non-crate) licence: libgit2 (GPL-2.0 with linking exception, via `libgit2-sys`), Oniguruma (2-clause BSD-style, via `onig_sys`), zlib (via `libz-sys`), SQLite (public domain, via `libsqlite3-sys`), and one-line Apache-2.0 notes for `usearch` and `numkong` (no NOTICE file ships). Each entry names the `-sys` crate and version that ships the bundled code.
 
 **When a `-sys` crate is upgraded** (libgit2-sys, onig_sys, libz-sys, libsqlite3-sys, or any new one), re-verify the bundled-native section against the new registry source (`~/.cargo/registry/src/<registry>/<crate>-<version>/...`): the bundled code's licence may have changed, and the `-sys` crate's own crates.io metadata (which `cargo-about` reads) does not reflect the bundled code's licence. Also confirm the OpenSSL-headers statement in that section still holds for the new libgit2-sys version (it is only compiled when `git2`'s `https` feature is enabled on Linux, which lievo does not enable).
-
-The `## lievo vX.Y.Z` heading in the file must match `Cargo.toml` (enforced by a unit test). release-plz does not update it, so bump it on the release PR branch; the Check job stays red until you do. If a push to `main` rewrites that branch, bump it again.
 
 ### Smoke test after a release
 

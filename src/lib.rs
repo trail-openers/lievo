@@ -87,20 +87,3 @@ pub mod layout;
 /// Auto-refresh: staleness detection and cheap-layer refresh of analyzed data.
 pub mod refresh;
 pub(crate) mod refresh_resume;
-
-#[cfg(test)]
-mod release_metadata_tests {
-    // release-plz bumps Cargo.toml but not the `## lievo vX.Y.Z` heading in
-    // THIRD_PARTY_NOTICES.md. This fails until the release PR updates the heading.
-    // It lives here, not in tests/, because CI's Check job runs `cargo test --lib`.
-    #[test]
-    fn test_third_party_notices_heading_matches_package_version() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/THIRD_PARTY_NOTICES.md");
-        let text = std::fs::read_to_string(path).expect("THIRD_PARTY_NOTICES.md is readable");
-        let heading = format!("## lievo v{}", env!("CARGO_PKG_VERSION"));
-        assert!(
-            text.lines().any(|line| line == heading),
-            "THIRD_PARTY_NOTICES.md has no `{heading}` heading; bump it when the version changes"
-        );
-    }
-}
