@@ -15,7 +15,7 @@ Register the server once, import the skill once, and every repo the agent works 
 
 ## Register the MCP server
 
-`lievo mcp` resolves the repository it is launched in, registers it on first use, and indexes in the background. One command per agent; remove by reversing it.
+`lievo mcp` resolves the repository it is launched in, registers it on first use, and indexes in the background. One command per agent; remove by reversing it. Client commands, config paths, and client flags on this page belong to each agent and are not verified by lievo's code. The Claude Code and Codex `mcp add` lines match [quickstart.md](quickstart.md); if a client command differs, follow its docs.
 
 ### Claude Code
 
@@ -33,7 +33,7 @@ codex mcp add lievo -- lievo mcp                     # add
 codex mcp remove lievo                                # remove
 ```
 
-Writes `[mcp_servers.lievo]` to `~/.codex/config.toml`. Start Codex from inside the repo. To pin one repo instead of following the working directory:
+Writes `[mcp_servers.lievo]` to `~/.codex/config.toml`. Start Codex from inside the repo. To pin one repo instead of following the working directory (Codex's `--env` flag, unverified here):
 
 ```bash
 codex mcp add lievo --env LIEVO_PROJECT_DIR=/path/to/repo -- lievo mcp
@@ -41,7 +41,7 @@ codex mcp add lievo --env LIEVO_PROJECT_DIR=/path/to/repo -- lievo mcp
 
 ### pi
 
-pi has no native MCP; it talks to lievo through the [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) package. Add an `mcpServers` entry to the shared user-global config so one registration covers every repo:
+pi has no built-in MCP support (unverified here); it talks to lievo through the [pi-mcp-adapter](https://www.npmjs.com/package/pi-mcp-adapter) package. Add an `mcpServers` entry to the shared user-global config so one registration covers every repo:
 
 ```jsonc
 // ~/.config/mcp/mcp.json
@@ -52,7 +52,7 @@ pi has no native MCP; it talks to lievo through the [pi-mcp-adapter](https://www
 }
 ```
 
-Start pi from inside the repo, or pin the working directory by adding `"cwd": "/path/to/repo"` to the entry.
+Start pi from inside the repo, or pin the working directory by adding `"cwd": "/path/to/repo"` to the entry (the `cwd` field is a pi-mcp-adapter setting, unverified here).
 
 ### Cursor (for completeness)
 
@@ -60,7 +60,7 @@ Cursor does not start MCP servers in the workspace folder and has no `cwd` varia
 
 ## Install the lievo skill
 
-The skill lives at `skills/lievo/` in this repository. Copy the directory into the agent's skill location.
+The skill lives at `skills/lievo/` in this repository. Copy the directory into the agent's skill location. Destination paths below are each agent's convention, not verified by lievo's code.
 
 ### Claude Code
 
@@ -82,14 +82,14 @@ It is then available to any session via the skill loader.
 
 ### pi
 
-pi has no first-class skill loader. Two options, in order of preference:
+pi has no first-class skill loader (unverified here). Two options, in order of preference:
 
 1. **Include the skill in the agent's instructions.** Reference `skills/lievo/SKILL.md` from a project instruction file so the agent reads it at task start.
 2. **Rely on the MCP tools alone.** `lievo_explore`'s own tool description carries the core usage guidance (batch files into one call, the `scope`/`files`/`bundle` modes, the continuation contract). The skill makes the agent *reliably* pick the right query and parse the JSON; without it the agent may still reach for grep first.
 
 ### Codex CLI
 
-Codex has no first-class skill loader either. As with pi, include `skills/lievo/SKILL.md` in `AGENTS.md` or another project instructions file, or rely on the MCP tools. The skill's command map is exactly what `AGENTS.md` would otherwise have to repeat.
+Codex has no first-class skill loader either (unverified here). As with pi, include `skills/lievo/SKILL.md` in `AGENTS.md` or another project instructions file, or rely on the MCP tools. The skill's command map is exactly what `AGENTS.md` would otherwise have to repeat.
 
 ## Verify
 

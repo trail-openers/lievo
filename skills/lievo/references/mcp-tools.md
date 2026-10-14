@@ -37,11 +37,13 @@ One call, capped at 24K chars of output. Word-matches file names/paths **and** s
 Guidance baked into the tool: batch related files into one call instead of one call per file; do not re-read a file whose source you already received this session; do not re-request edges already returned.
 
 ## Agent registration (per client)
+Client-side formats below live outside this repo and are not verified by lievo's code. The Claude Code and Codex lines match `docs/quickstart.md`.
+
 - Claude Code: `claude mcp add lievo --scope user -- lievo mcp` (uses `CLAUDE_PROJECT_DIR`).
 - Codex CLI: `codex mcp add lievo -- lievo mcp` (or pin with `--env LIEVO_PROJECT_DIR=/path/to/repo`).
-- VS Code: `code --add-mcp '{"name":"lievo","command":"lievo","args":["mcp"]}'`.
+- VS Code (unverified here): `code --add-mcp '{"name":"lievo","command":"lievo","args":["mcp"]}'`.
 - Cursor (needs the path named explicitly, in `.cursor/mcp.json`): `{"mcpServers":{"lievo":{"command":"lievo","args":["mcp"],"env":{"LIEVO_PROJECT_DIR":"/path/to/repo"}}}}`.
-- pi: no native MCP; use the `pi-mcp-adapter` npm package.
+- pi (unverified here): no built-in MCP; use the `pi-mcp-adapter` npm package.
 
 Disable auto indexing: `LIEVO_NO_REFRESH=1` (then run `lievo refresh` manually).
 

@@ -1,6 +1,6 @@
 ---
 name: lievo
-description: "Query a repo's code map: impact, deps, entities."
+description: "Query a repo's structural code map with lievo (impact, deps, dependents, entities, subsystems). Use when asked what depends on X, what breaks if Y changes, or where a symbol lives in an indexed repo (rs, py, js/jsx/mjs, ts/tsx, go)."
 version: 1.0.0
 author: Janni Turunen (trail-openers), Hermes Agent
 license: AGPL-3.0
@@ -30,18 +30,18 @@ This skill is for **driving the CLI** from the `terminal` tool. (An MCP server, 
 
 ## Prerequisites
 - `lievo` on PATH (`lievo --version`). Install: `references/notes.md`.
-- A repo registered as a **project** and refreshed. If not, set it up (below). The project name defaults to the checkout dir name unless you pass one.
+- A repo registered as a **project** and refreshed. If not, set it up (below). Default project name (same rules as the #27 naming): the checkout dir name if free; if taken, `<owner>/<repo>` when the repo has an identity (origin remote or `identity:` config), else `<dir>-2`, `-3`, …; a second checkout of the same identity (e.g. a git worktree) becomes `<repo>@<dir>`. Pass an explicit name to avoid guessing.
 - `lievo doctor` (read-only) reports registration + index state and the one command to fix it. **Run it first** when in doubt.
 - **Multi-project caveat:** with more than one project in the DB, omitting `--project <name>` errors (`multiple projects exist`). Almost always pass `--project` explicitly.
 
 ## Set up a repo (first time)
 ```bash
 cd /path/to/repo
-lievo admin add-repo .            # registers repo + creates project named after the dir
+lievo admin add-repo .            # registers repo + creates project (default name: see Prerequisites)
 lievo refresh <project>            # builds the index (add --no-summarize for the fast path, see Summaries)
 lievo doctor                       # confirm: registered: true, index: current
 ```
-`add-repo` prints `Registered repository '...' in project '...'`. `refresh` defaults the project to the sole project only when exactly one exists; otherwise pass it.
+`add-repo` prints `Registered repository '<repo>' (id: <id>) in project '<project>'`. `refresh` defaults the project to the sole project only when exactly one exists; otherwise pass it.
 
 ## Quick Reference (CLI)
 All `query` subcommands take `--project <name>`. The global `--format json` goes *before* the subcommand: `lievo --format json query entities ...`.
@@ -79,7 +79,8 @@ Prefer `--format json` when you will parse the result (pipe to `jq`); human form
 
 ## Output formats (verified)
 - **JSON is NOT uniformly NDJSON.** `subsystems`, `deps`, `dependents`, `relationships`, `entity` emit **NDJSON** (one object per line). `entities` emits **one JSON array**. `children` emits **one object** `{parent, children[], child_count}`. Parse per-command; do not assume line-per-record everywhere.
-- A leading `# {"unresolved_imports": N, ...}` line may precede the JSON on `deps`/`dependents` — it is a stderr-style header; skip it.
+- Empty `deps`/`dependents`/`relationships` results print a bare `[]` line, not zero lines. A line-per-object parser must accept it.
+- On the relationship commands (`deps`, `dependents`, `relationships`) a `# {"unresolved_imports": N, "unresolved_external": N}` line is written to **stdout** before the rows when resolution counts exist. `2>/dev/null` does not remove it. Skip lines starting with `#`.
 - Field names are `snake_case`; optional fields are **omitted** (not `null`) in most structs, but `entities`/`entity` carry `summary: null` and `metrics_json: null` when absent. `metrics_json` is a *string* containing JSON — parse it twice.
 - `rel_type` ∈ {`calls`, `imports`, `contains`, ...}; `provenance` ∈ {`resolved`, `heuristic`} (heuristic = inferred edge, lower confidence).
 - Human layout is **not stable** — scripts must use JSON.
@@ -89,13 +90,13 @@ This is the single most important operational distinction. **Summarization is op
 
 | DB state | `entities[].summary` / `entity.summary` | How you tell | When |
 |---|---|---|---|
-| **No summaries** | `null` | `lievo admin status` → `Summary coverage: P: 0/478 functions summarized` | No summarizer backend available, or `--no-summarize`, or `summarize: false` |
-| **Summaries present** | one-line prose (module/function/file tiers) | same line shows `>0/...` | A backend (apfel / llama-server / generic OpenAI-compatible) was reachable during `refresh` |
+| **No summaries** | `null` | `lievo admin status` → a `Summary coverage:` header, then `<repo>: 0/478 functions summarized (478 missing)` | No summarizer backend available, or `--no-summarize`, or `summarize: false` |
+| **Summaries present** | one-line prose (module/function/file tiers) | the `Summary coverage:` lines show non-zero done counts | A backend (apfel / llama-server / generic OpenAI-compatible) was reachable during `refresh` |
 
-- **Auto-enable:** a manual `lievo refresh` turns summarization **on** when an `apfel` binary is on PATH, or when a remote endpoint is configured. On this host `apfel` is on PATH and works directly (Apple Foundation Models, on-device) and **honors lievo's batch contract**, so a plain `lievo refresh` auto-summarizes correctly — it's just **slow** (~1.5–2s/function; hundreds of functions = many minutes). **Do NOT point lievo at the local `gemma-4-26b-a4b`** (`tool-server gemma4moe` on `:8099`, or halo): it answers a single-item prompt fine but **loops to empty output on lievo's multi-item batch prompt** (with or without the `#<n>` tokens), so `parse_batch_response` yields nothing and summaries are silently skipped. Use apfel, or a contract-honoring backend, for summaries.
+- **Auto-enable:** a manual `lievo refresh` turns summarization **on** when an `apfel` binary is on PATH, or when a summarizer endpoint is configured. apfel (on-device) honors lievo's batch contract, but summarization is **slow** (minutes for hundreds of functions). Use a backend that honors the batch contract (one `#<n>:` line per input item): a model that answers one item well but loops to empty output on the multi-item prompt yields nothing, and summaries are skipped. Use apfel or a contract-honoring server for summaries.
 - **Fast path:** `lievo refresh <project> --no-summarize` builds the structural + vector index quickly and skips summaries. Use this for exploration; add summaries later with `lievo summarize <project>` or a full refresh when time permits.
 - **Vector index is separate from summaries.** `--no-summarize` still builds the embedding index → `--semantic` works. No vector index → `query entities --semantic` prints `Semantic search unavailable ...` and falls back to keyword (non-fatal). The ~16 MB embedding model downloads once from Hugging Face on the first manual refresh.
-- **No summarizer is configured in the lievo-public repo itself** (no `.lievo/config.yaml`, `LIEVO_SUMMARIZER_TOKEN` unset). On this host the only working backend is `apfel` (auto-detected). For a remote/LLM summarizer, configure `.lievo/config.yaml` (`apfel_endpoint`, `summarizer_backend`) — see `references/notes.md`.
+- **No summarizer is configured by default** (no `.lievo/config.yaml`, `LIEVO_SUMMARIZER_TOKEN` unset). For a remote/LLM summarizer, configure `.lievo/config.yaml` (`apfel_endpoint`, `summarizer_backend`) — see `references/notes.md`.
 - A degraded run (backend unreachable) **never fails**: indexing succeeds, summaries are skipped, and a warning names the backend + endpoint.
 
 ## Environment variables (project / config)
@@ -104,14 +105,14 @@ This is the single most important operational distinction. **Summarization is op
 - `LIEVO_MCP_TOOLS=name1,name2` — opt in extra MCP tools (default lists only `lievo_explore`).
 - `LIEVO_DB=/path/to/db` — move the SQLite DB off `~/.lievo/`.
 - `LIEVO_APFEL_ENDPOINT`, `LIEVO_SUMMARIZER_TOKEN` — summarizer endpoint + bearer token (token is a credential; never commit).
-- Per-repo overrides live in `<repo>/.lievo/config.yaml` (`summarize`, `apfel_endpoint`, `summarizer_backend`, `summarizer_model`, `exclude` globs, `preserve_function_entities`).
+- Per-repo overrides live in `<repo>/.lievo/config.yaml` (`summarize`, `apfel_endpoint`, `summarizer_backend`, `summarizer_model`, `exclude` globs, `preserve_function_entities`, `summarizer_input_char_budget`, `identity`).
 
 ## Pitfalls
 - **Omitting `--project`** with multiple projects → hard error. Pass it.
 - **Assuming NDJSON for every command** — `entities` is an array, `children` is an object (see Output formats).
 - **`query modules <subsystem-id>` / `query files <module-id>`** take the *container's* ID, not a name; pass the wrong ID and you get `No modules found.` / empty. Get the ID from `query subsystems` (JSON `id`) first.
 - **`summary` can be `null`** even on a healthy index (no summarizer) — don't treat a missing summary as an error; read source via `read_file` or MCP `get_entity`.
-- **`--semantic` without a vector index** silently falls back to keyword (warning on stderr, not an error).
+- **`--semantic` without a vector index** falls back to keyword with a warning on stderr (not an error).
 - **Summarization is slow on-device.** For quick orientation use `--no-summarize`; don't wait on a full summarize pass just to look at structure.
 - **Impact paths are repo-relative** (`src/foo.rs`), not absolute and not entity IDs.
 - **Mixed-language repos:** lievo sees only the 8 indexed extensions. A symbol in Ruby/Java/etc. won't appear — that's a miss, not a lievo bug.

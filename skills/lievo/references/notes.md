@@ -26,14 +26,13 @@ Config lives in `<repo>/.lievo/config.yaml` (per repo); env vars override where 
 | `summarizer_input_char_budget` (int) | Per-call input budget in chars (default 24,000, clamped 2,000–64,000). Applies to `llama-server`/`generic` only. |
 | `LIEVO_SUMMARIZER_TOKEN` (env) | Bearer token. Deliberately env, not config — config is checked in, tokens are not. Never commit. |
 
-Health probe: lievo probes `GET /v1/models` then `GET /health` (order depends on backend) and accepts the standard model-list shape or a `{status: ...}` body. A 200 with the wrong shape degrades to the no-summarizer path — never a hard error.
+Health probe: `apfel` and `llama-server` probe `GET /health`; `generic` probes `GET /v1/models` then `GET /health`. It accepts the standard model-list shape or a `{status: ...}` body. A 200 with the wrong shape degrades to the no-summarizer path — never a hard error.
 
-### apfel on this host (Apple Silicon) — the working summarizer
-apfel (v1.9.x) uses Apple Foundation Models on-device; it is on PATH at `/opt/homebrew/bin/apfel` and **works directly** with no remote server or model download. It honors lievo's `#<n>:` batch contract and produces correct one-line summaries, but is **slow** (~1.5–2s/function; ~480 functions ≈ 15 min). A plain `lievo refresh` auto-enables it. For quick structural work use `--no-summarize`; for summaries, run a plain refresh in the background and/or `lievo summarize <project>` later.
+### apfel (Apple Silicon)
+apfel uses Apple Foundation Models on-device and needs no remote server or model download. It honors lievo's `#<n>:` batch contract, but is **slow** (minutes for hundreds of functions). With apfel on PATH, a plain `lievo refresh` auto-enables summaries. For quick structural work use `--no-summarize`; for summaries, run a plain refresh in the background or `lievo summarize <project>` later.
 
-### Backends that do NOT work for lievo on this host
-- **`gemma-4-26b-a4b`** — served locally by `tool-server gemma4moe` on `http://127.0.0.1:8099/v1` (start with `tool-server gemma4moe --sleep-idle-seconds 90`; stop with `llm-stop`), or via `halo` at `http://halo:8080/v1`. Fast (~2s) and good at single-item queries, but it **loops to empty output on any multi-item batch prompt** — with or without the `#<n>` position tokens — so lievo's `parse_batch_response` (one `#<n>:` line per input) yields nothing and summaries are silently skipped (the documented `#<n>:` parse-failure mode: a format issue, not connectivity). Verified 2026-10-14.
-- **`halo`** (`http://halo:8080/v1`): same gemma-4 model, and intermittently unreachable from this Mac (`No route to host`).
+### Backends that fail lievo's batch contract
+A model that answers single items well but loops to empty output on the multi-item batch prompt (with or without the `#<n>` tokens) yields nothing from `parse_batch_response`, and summaries are silently skipped. This is a format failure, not a connectivity one. Test a backend against a multi-item prompt before relying on it for summaries. An unreachable backend behaves like any other: a warning, and no summaries.
 
 The contract lievo requires (from `src/summarization/apfel.rs`): system prompt + user body `Summarize each function below. Output one line per function: #<n>: <summary>`, items as `--- Function: #0\n<code>\n---`. A backend must emit one `#<n>:` line per entry; plain-prose or empty output = parse failure. A degraded run (backend unreachable or contract-ignoring) never fails: indexing succeeds, summaries are skipped, and an unreachable backend logs a warning naming it.
 
@@ -71,7 +70,7 @@ Then a one-shot `lievo refresh <project>` prints a verbatim degradation warning 
 | `~/.lievo/debug-import-resolution.log` | Optional import-resolution debug log (1 MB cap). |
 
 - `LIEVO_DB=/path/to/db` moves the DB off `~/.lievo/` (then delete that file, not the dir, to reset).
-- Reset everything: `rm -rf ~/.lievo` (rebuilds from source on next refresh).
+- Reset everything (**user-only**: destructive, an agent must not run this unprompted): `rm -rf ~/.lievo` (rebuilds from source on next refresh).
 - Reset only the vector index: `rm -rf ~/.lievo/indices/` (DB stays intact; model re-downloads if its HF cache was wiped).
 - `lievo doctor` shows the DB path actually in use.
 
