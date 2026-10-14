@@ -53,7 +53,7 @@ Use conventional commit format:
 
 Format: `feat: brief description (#123)`, or `feat: brief description` with a `Closes #123` trailer in the body.
 
-**Do not put the issue number in the scope** (`feat(#123):` is wrong). release-plz and git-cliff build the changelog from commit subjects, and numeric scopes get mangled in the generated `CHANGELOG.md`. Reference the issue at the end of the subject or in the body.
+**Do not put the issue number in the scope** (`feat(#123):` is wrong). Keep the scope alphabetic so the generated `CHANGELOG.md` entries stay readable. Reference the issue at the end of the subject or in the body.
 
 ## Branch Naming
 
@@ -110,6 +110,7 @@ Releases are automated with [release-plz](https://release-plz.dev) and built by 
 Rules:
 
 - Do not hand-edit `CHANGELOG.md` or the version. release-plz regenerates both from `main` on every push.
+- On the first release PR, check the `CHANGELOG.md` diff: one intro block only, a `0.2.0` section containing only commits after the `v0.1.0` tag, and no duplicated content. If the output is wrong, fix the section by hand on the release PR branch before merging.
 - Do not leave the release PR open while other PRs merge. Each merge to `main` rewrites the release PR, so review and merge its final state promptly.
 - The first release-plz release is `0.2.0`. The crate has never been published, so `Cargo.toml` was set to `0.2.0` by hand in the PR for #40 (the only manual version bump). Without that bump release-plz would fail: `release-pr` bails with "not found in the registry, but the git tag v0.1.0 exists". With `0.2.0` there is no matching tag, so release-plz opens a release PR for the unpublished `0.2.0` (changelog only, version unchanged) and publishes it when that PR is merged. Check that the release PR keeps `0.2.0` and does not re-tag or re-publish `0.1.0` before merging it.
 - release-plz does not update the `## lievo vX.Y.Z` heading in `THIRD_PARTY_NOTICES.md`. Update it on the release PR branch before merging (see "Regenerating third-party notices").

@@ -189,7 +189,7 @@ When a file exceeds its budget OR has 3+ distinct responsibilities:
 
 ### Conventional Commits
 
-All commits use [Conventional Commits](https://www.conventionalcommits.org/) format with **no issue number in the scope**. release-plz and git-cliff build the changelog from commit subjects, and a numeric scope such as `feat(#123):` gets mangled in the generated `CHANGELOG.md`. Reference the issue at the end of the subject or in a `Closes #123` trailer instead:
+All commits use [Conventional Commits](https://www.conventionalcommits.org/) format with **no issue number in the scope**. Keep the scope alphabetic (a numeric scope such as `feat(#123):` is not the project format). Reference the issue at the end of the subject or in a `Closes #123` trailer instead:
 
 ```
 feat: brief description (#123)
@@ -395,7 +395,7 @@ git push
 
 ### In Commit Messages
 
-Reference the issue in the body trailer, not the scope (release-plz/git-cliff mangle issue numbers in scopes):
+Reference the issue in the body trailer, not the scope:
 
 ```
 feat: add json output support
