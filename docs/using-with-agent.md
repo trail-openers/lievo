@@ -17,7 +17,7 @@ Register the server once and install the skill once. Every repo the agent works 
 
 ## Install the skill
 
-Get the skill from the repository, not from a lievo checkout, so the steps work anywhere. Clone the repo to a temporary directory. This uses `main`. Until the skill is merged to `main`, add `--branch feature/issue-42-add-agent-skill`.
+Get the skill from the repository, not from a lievo checkout, so the steps work anywhere. Clone the repo to a temporary directory. This uses `main`.
 
 ```bash
 git clone --depth 1 https://github.com/trail-openers/lievo /tmp/lievo-src
