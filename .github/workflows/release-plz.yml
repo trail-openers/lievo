@@ -33,7 +33,7 @@ jobs:
 
       - name: Run release-plz release-pr
         # Pinned to a commit SHA: this job holds RELEASE_PLZ_TOKEN, and tags are mutable.
-        uses: release-plz/action@8fa135dc3a659a8c78f524d01567d5e8decf3d48 # v0.5.0
+        uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         with:
           command: release-pr
         env:
@@ -63,7 +63,7 @@ jobs:
 
       - name: Run release-plz release
         # Pinned to a commit SHA: this job holds CARGO_REGISTRY_TOKEN and RELEASE_PLZ_TOKEN.
-        uses: release-plz/action@8fa135dc3a659a8c78f524d01567d5e8decf3d48 # v0.5.0
+        uses: release-plz/action@7ef5e4d4b0420630cfcaeb182c01e13651d4c577 # v0.5.145
         with:
           command: release
         env:
